@@ -1,0 +1,22 @@
+{
+  "name": "smart-support-ai",
+  "version": "1.0.0",
+  "description": "Copiloto inteligente de atendimento (MVP)",
+  "main": "server/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/server.js"
+  },
+  "engines": {
+    "node": ">=22.9.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "@google/genai": "^3.3.0",
+    "express": "^5.3.0"
+  }
+}

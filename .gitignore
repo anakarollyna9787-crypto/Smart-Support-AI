@@ -1,0 +1,17 @@
+# Bibliotecas baixadas pelo npm (podem ser reinstaladas com "npm install")
+node_modules/
+
+# Configurações secretas (inclui variações como .env.local e .env.production)
+.env
+.env.*
+
+# Registros (logs)
+*.log
+npm-debug.log*
+
+# Arquivos do sistema operacional
+Thumbs.db
+.DS_Store
+
+# Configurações do editor
+.vscode/
