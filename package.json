@@ -5,7 +5,8 @@
   "main": "server/server.js",
   "private": true,
   "scripts": {
-    "start": "node --env-file-if-exists=.env server/server.js"
+    "start": "node --env-file-if-exists=.env server/server.js",
+    "test": "node --test \"testes/*.test.js\""
   },
   "engines": {
     "node": ">=22.9.0"
@@ -17,6 +18,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
     "@google/genai": "^3.3.0",
-    "express": "^5.3.0"
+    "express": "^5.3.0",
+    "express-rate-limit": "8.7.2",
+    "groq-sdk": "^1.6.0"
   }
 }

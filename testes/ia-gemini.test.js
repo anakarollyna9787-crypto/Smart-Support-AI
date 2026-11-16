@@ -447,11 +447,11 @@ describe('6. A aplicação, o modo simulado e a Anthropic continuam iguais', () 
   // A presença (ou ausência) de GEMINI_API_KEY no .env não importa para o modo simulado.
   // assert.ok em vez de assert.match: em caso de falha, o conteúdo do .env não é exibido.
   // O modo é definido em cada teste; aqui só se confere que o .env tem um valor válido.
-  test('o .env tem um MODO_IA válido (simulado ou gemini) e nenhuma chave da Anthropic', () => {
+  test('o .env tem um MODO_IA válido (simulado, gemini ou groq) e nenhuma chave da Anthropic', () => {
     const env = fs.readFileSync(path.join(RAIZ, '.env'), 'utf8');
     const modos = [...env.matchAll(/^MODO_IA=(.*?)\r?$/gm)].map((m) => m[1].trim().toLowerCase());
     assert.equal(modos.length, 1, 'o .env deveria ter exatamente uma linha MODO_IA');
-    assert.ok(['simulado', 'gemini'].includes(modos[0]), 'MODO_IA no .env deveria ser "simulado" ou "gemini"');
+    assert.ok(['simulado', 'gemini', 'groq'].includes(modos[0]), 'MODO_IA no .env deveria ser "simulado", "gemini" ou "groq"');
     assert.ok(!/^ANTHROPIC_API_KEY=/m.test(env), 'não deveria haver chave da Anthropic no .env');
   });
 

@@ -82,3 +82,57 @@ Se algo der errado durante a apresentação
 - A página não abre: confira se o terminal mostra "Smart Support AI iniciado." e se o endereço é http://localhost:3000.
 - O selo não mostra "Modo simulado": pare o servidor (Ctrl + C), confira MODO_IA=simulado no .env sem exibi-lo na tela, e rode npm start de novo.
 - A cópia foi bloqueada pelo navegador: o texto já fica selecionado; pressione Ctrl + C.
+
+---
+
+Site público com IA real (Groq) no Render
+
+Este roteiro é para quando a publicação com a Groq for autorizada. Nada aqui deve ser feito sem essa autorização.
+
+Pré-requisitos
+
+- O código com a Groq e a proteção (server/ia-groq.js, server/protecao.js e as demais alterações) precisa estar no GitHub, porque o Render publica a partir do repositório. Isso exige commit e push autorizados.
+- Antes do push, rode npm test na pasta do projeto. Todos os testes devem passar (nenhum faz chamada real).
+- Na conta da Groq: mantenha o plano gratuito, sem cartão cadastrado (assim, o pior caso é o limite da Groq, nunca uma cobrança). Confira também, no painel da Groq, as opções de controle e retenção de dados e ative a retenção zero se ela estiver disponível para a conta.
+
+Variáveis de ambiente no Render (Environment)
+
+- MODO_IA = groq
+- GROQ_API_KEY = a chave da Groq. Cadastre só no painel do Render. Nunca coloque a chave em arquivos do repositório, em render.yaml, em prints ou em mensagens.
+- Os limites já têm os valores aprovados como padrão e não precisam ser cadastrados. Só cadastre se quiser trocar algum: LIMITE_IP_JANELA (6), JANELA_IP_MS (600000 = 10 min), LIMITE_IP_DIA (20), LIMITE_GLOBAL_DIA (200), LIMITE_SIMULTANEAS (2).
+- PROXIES_CONFIAVEIS: não cadastre (o padrão é 1). Só mude se a validação abaixo indicar. Valores aceitos: números de 0 a 10. Qualquer outro valor (inclusive "true") é ignorado e vale 1.
+
+Como validar o IP real no Render (sem custo, ANTES de ativar a Groq)
+
+Os limites valem também no modo simulado. Por isso, dá para validar tudo com MODO_IA=simulado, sem gastar nenhuma chamada da Groq. O servidor não registra IPs; a validação é feita pelo comportamento dos limites.
+
+1. Publique com MODO_IA=simulado e sem PROXIES_CONFIAVEIS.
+2. No computador (rede Wi-Fi), faça 6 análises seguidas no site. A 7ª deve mostrar: "Você atingiu o limite da demonstração: até 6 chamadas a cada 10 minutos."
+3. Ao mesmo tempo, no celular usando dados móveis (Wi-Fi desligado), faça uma análise. Ela deve funcionar.
+   - Se o celular também estiver bloqueado, o servidor está enxergando o IP de um proxy do Render (todos os visitantes dividiriam a mesma cota). Cadastre PROXIES_CONFIAVEIS=2, aguarde o reinício do serviço e repita do passo 2.
+4. Com o computador ainda bloqueado, tente "inventar" outro IP. No Git Bash, troque SEU-SITE pelo endereço do site:
+
+   curl -s -X POST https://SEU-SITE.onrender.com/api/analisar -H "Content-Type: application/json" -H "X-Forwarded-For: 198.51.100.7" --data '{"mensagem":"teste ficticio"}'
+
+   A resposta deve continuar sendo o aviso de limite. Se vier uma análise, o servidor está confiando em proxies demais (o visitante conseguiria escapar do limite): diminua PROXIES_CONFIAVEIS (de 2 para 1) e repita.
+5. Os contadores ficam na memória e zeram quando o serviço reinicia. Depois da validação, reinicie o serviço no Render (ou aguarde 10 minutos) para começar do zero.
+
+Ativando a Groq
+
+1. Com a validação concluída, troque MODO_IA para groq e cadastre GROQ_API_KEY.
+2. Abra o site: o selo deve mostrar "IA real · Groq" e o aviso azul deve informar que é IA real, com o limite da demonstração.
+3. Faça um único caso fictício (este guia, Caso 2) para conferir a análise e a resposta. Essa é a primeira chamada real e só deve ser feita com autorização.
+4. Confira os registros (Logs) do Render: devem aparecer só linhas técnicas (modo, limites, códigos de erro). Nenhuma chave, IP ou texto do caso.
+
+Voltar para o modo simulado (plano B, sem novo deploy)
+
+- No painel do Render, troque MODO_IA para simulado e salve. O serviço reinicia sozinho em cerca de 1 minuto.
+- A chave da Groq pode continuar cadastrada (ela não é usada no modo simulado) ou ser removida.
+- O modo Gemini continua disponível do mesmo jeito (MODO_IA=gemini e GEMINI_API_KEY).
+
+Limites da proteção (o que ela não cobre)
+
+- Os contadores ficam na memória do servidor: zeram a cada reinício (deploy, troca de variável ou "hibernação" do plano gratuito do Render).
+- Os limites contam por IP. Quem troca de rede (por exemplo, de Wi-Fi para dados móveis) ganha uma nova cota de visitante; o limite global diário de 200 chamadas é a barreira final.
+- Visitantes atrás da mesma rede (empresa, universidade) dividem a mesma cota por IP.
+- Com mais de uma instância do serviço, cada uma teria contadores próprios. O plano atual usa uma única instância.

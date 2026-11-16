@@ -41,6 +41,9 @@
         <p class="descricao">Informe a mensagem do cliente e os dados do caso. A análise aparece antes de qualquer sugestão de resposta.</p>
       </div>
 
+      <!-- Aviso de IA real e limite da demonstração (preenchido pelo app.js com os dados de /api/status) -->
+      <p class="aviso-demo" id="aviso-demo" role="note" hidden></p>
+
       <p class="aviso-privacidade" role="note">
         Use apenas casos fictícios ou anonimizados. Não insira dados pessoais reais nem informações confidenciais.
       </p>
@@ -51,9 +54,9 @@
         <div class="campo">
           <div class="campo-topo">
             <label for="mensagem">Mensagem do cliente <span class="obrigatorio">obrigatório</span></label>
-            <span class="contador" id="contador-mensagem">0 / 5.000 caracteres</span>
+            <span class="contador" id="contador-mensagem">0 / 2.000 caracteres</span>
           </div>
-          <textarea id="mensagem" name="mensagem" rows="7" required maxlength="5000"
+          <textarea id="mensagem" name="mensagem" rows="7" required maxlength="2000"
             placeholder="Cole aqui a mensagem exatamente como o cliente escreveu."></textarea>
           <p class="erro" id="erro-mensagem" hidden>Informe a mensagem do cliente para continuar.</p>
         </div>
@@ -85,7 +88,7 @@
         <!-- Histórico ou contexto (opcional) -->
         <div class="campo">
           <label for="contexto">Histórico ou contexto adicional <span class="opcional">opcional</span></label>
-          <textarea id="contexto" name="contexto" rows="4" maxlength="5000"
+          <textarea id="contexto" name="contexto" rows="4" maxlength="2000"
             placeholder="Contatos anteriores, número do pedido fictício, o que já foi tentado…"></textarea>
         </div>
 
@@ -105,7 +108,7 @@
         <!-- Descrição da solução (aparece só quando a resposta é "Sim") -->
         <div class="campo campo-condicional" id="bloco-solucao" hidden>
           <label for="descricao-solucao">Descreva a solução autorizada <span class="obrigatorio">obrigatório</span></label>
-          <textarea id="descricao-solucao" name="descricao-solucao" rows="3" maxlength="2000"
+          <textarea id="descricao-solucao" name="descricao-solucao" rows="3" maxlength="1000"
             placeholder="Ex.: reembolso integral em até 7 dias úteis, aprovado pela supervisão."></textarea>
           <p class="ajuda">A IA usa somente o que estiver escrito aqui. Ela não cria prazos, valores ou políticas.</p>
           <p class="erro" id="erro-solucao" hidden>Descreva a solução autorizada ou altere a opção acima.</p>

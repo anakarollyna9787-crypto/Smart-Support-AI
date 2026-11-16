@@ -14,6 +14,7 @@ const erroMensagem = document.getElementById('erro-mensagem');
 const erroSolucao = document.getElementById('erro-solucao');
 const status = document.getElementById('status');
 const seloModo = document.getElementById('selo-modo');
+const avisoDemo = document.getElementById('aviso-demo');
 const botaoAnalisar = form.querySelector('button[type="submit"]');
 const botaoLimpar = document.getElementById('botao-limpar');
 const cartaoAnalise = document.getElementById('cartao-analise');
@@ -35,9 +36,9 @@ const colunaPrincipal = document.querySelector('.coluna-principal');
 // Configurações do tratamento de erros.
 const TEMPO_LIMITE_MS = 35000;  // desiste depois de 35 segundos sem resposta (a API desiste em 25 s)
 const AVISO_DEMORA_MS = 8000;   // avisa que está demorando depois de 8 segundos
-const LIMITE_MENSAGEM = Number(mensagem.getAttribute('maxlength')) || 5000;
+const LIMITE_MENSAGEM = Number(mensagem.getAttribute('maxlength')) || 2000;
 
-const MSG_SEM_CONEXAO = 'Não foi possível falar com o servidor. Confira se ele está ligado (npm start) e tente de novo.';
+const MSG_SEM_CONEXAO = 'Não foi possível falar com o servidor. Verifique sua conexão com a internet e tente novamente.';
 const MSG_TEMPO_ESGOTADO = 'O servidor demorou demais para responder. Tente novamente em instantes.';
 const MSG_RESPOSTA_INVALIDA = 'O servidor enviou uma resposta inesperada. Tente novamente.';
 
@@ -117,8 +118,10 @@ function definirProcessando(ativo, botao, textoCarregando, textoNormal) {
 
 // Mensagem amigável conforme o código de erro do servidor.
 function mensagemPorCodigo(codigo) {
+  if (codigo === 429) return 'Você atingiu o limite de uso da demonstração. Aguarde alguns minutos e tente novamente.';
+  if (codigo === 503) return 'Muitas pessoas estão usando a demonstração agora. Aguarde alguns segundos e tente novamente.';
   if (codigo === 413) return 'Os textos enviados são grandes demais. Reduza o conteúdo e tente novamente.';
-  if (codigo === 404) return 'O servidor não reconheceu o pedido. Reinicie o servidor (npm start) e recarregue a página.';
+  if (codigo === 404) return 'O servidor não reconheceu o pedido. Recarregue a página e tente novamente.';
   if (codigo >= 500) return 'O servidor encontrou um problema. Tente novamente em instantes.';
   return 'Não foi possível concluir o pedido. Tente novamente.';
 }
@@ -527,13 +530,34 @@ window.addEventListener('beforeunload', (evento) => {
 
 // ------------------------------------------------------------
 // 8. Mostra no topo o modo atual, informado pelo servidor,
+//    avisa quando a IA é real (e qual o limite da demonstração)
 //    e avisa se a configuração do servidor estiver incompleta.
 // ------------------------------------------------------------
-const NOMES_MODO = { simulado: 'Modo simulado', gemini: 'Modo Gemini' };
+const NOMES_MODO = { simulado: 'Modo simulado', gemini: 'IA real · Gemini', groq: 'IA real · Groq' };
+const PROVEDORES = { gemini: 'Google Gemini', groq: 'Groq' };
+
+// Monta o aviso de IA real com os limites informados pelo servidor.
+function mostrarAvisoDemonstracao(dados) {
+  const provedor = PROVEDORES[dados.modoIA];
+  const demo = dados.demonstracao;
+  if (!provedor || !demo) return;
+  const numeros = [demo.limitePorJanela, demo.janelaMinutos, demo.limitePorDia];
+  if (!numeros.every((n) => Number.isInteger(n) && n > 0)) return;
+  const modelo = typeof dados.modelo === 'string' ? `, modelo ${dados.modelo}` : '';
+  let textoDemo = `Você está usando IA real (${provedor}${modelo}). Esta é uma demonstração pública com limite de uso: `
+    + `até ${demo.limitePorJanela} chamadas a cada ${demo.janelaMinutos} minutos e até ${demo.limitePorDia} por dia, por visitante. `
+    + 'Cada análise e cada resposta gerada contam como uma chamada. Os casos enviados não são armazenados.';
+  if (demo.esgotadoHoje === true) textoDemo += ' O limite diário da demonstração já foi atingido hoje. Tente novamente amanhã.';
+  avisoDemo.textContent = textoDemo;
+  avisoDemo.hidden = false;
+}
+
 fetch('/api/status')
   .then((resposta) => resposta.json())
   .then((dados) => {
     seloModo.textContent = NOMES_MODO[dados.modoIA] || 'Modo desconhecido';
+    seloModo.classList.toggle('selo-real', Boolean(PROVEDORES[dados.modoIA]));
+    mostrarAvisoDemonstracao(dados);
     if (dados.configuracaoOk === false) {
       seloModo.textContent += ' · configuração incompleta';
       if (typeof dados.erroConfiguracao === 'string') mostrarAviso(status, dados.erroConfiguracao, true);

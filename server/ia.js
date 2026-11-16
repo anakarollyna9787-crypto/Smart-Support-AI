@@ -4,9 +4,10 @@
 //
 // O modo vem de MODO_IA no .env:
 // - simulado (padrão): conteúdos de exemplo, sem API e sem custo;
-// - gemini: Google Gemini, por meio de server/ia-gemini.js.
+// - gemini: Google Gemini, por meio de server/ia-gemini.js;
+// - groq: Groq, por meio de server/ia-groq.js.
 // Qualquer outro valor é recusado com uma mensagem clara.
-// Não há troca silenciosa de modo: se o Gemini falhar, o erro é mostrado.
+// Não há troca silenciosa de modo: se o Gemini ou a Groq falharem, o erro é mostrado.
 // A integração Anthropic (ia-real.js) não é carregada.
 // ============================================================
 
@@ -20,7 +21,10 @@ const MODO_IA = lerModo(process.env.MODO_IA);
 // Modelo oficial do Gemini (fixo; MODELO_GEMINI do .env não é usado neste modo).
 const MODELO_GEMINI = 'gemini-3.8-flash';
 
-const MSG_MODO_INVALIDO = 'O modo de IA configurado não é válido. Use MODO_IA=simulado ou MODO_IA=gemini no arquivo .env e reinicie o servidor.';
+// Modelo oficial da Groq (fixo; compatível com saída estruturada estrita).
+const MODELO_GROQ = 'openai/gpt-oss-120b';
+
+const MSG_MODO_INVALIDO = 'O modo de IA configurado não é válido. Use MODO_IA=simulado, MODO_IA=gemini ou MODO_IA=groq no arquivo .env e reinicie o servidor.';
 
 // A integração Gemini só é carregada no modo gemini, no primeiro uso.
 let iaGemini = null;
@@ -32,6 +36,16 @@ function obterIaGemini() {
   return iaGemini;
 }
 
+// A integração Groq só é carregada no modo groq, no primeiro uso.
+let iaGroq = null;
+function obterIaGroq() {
+  if (!iaGroq) {
+    const { criarIaGroq } = require('./ia-groq');
+    iaGroq = criarIaGroq({ modelo: MODELO_GROQ });
+  }
+  return iaGroq;
+}
+
 // Diz se a configuração do modo atual está completa (sem revelar valores).
 function situacaoConfiguracao() {
   if (MODO_IA === 'simulado') return { ok: true };
@@ -39,6 +53,11 @@ function situacaoConfiguracao() {
     const chave = process.env.GEMINI_API_KEY;
     if (typeof chave === 'string' && chave.trim()) return { ok: true };
     return { ok: false, mensagem: require('./ia-gemini').MENSAGENS.semChave };
+  }
+  if (MODO_IA === 'groq') {
+    const chave = process.env.GROQ_API_KEY;
+    if (typeof chave === 'string' && chave.trim()) return { ok: true };
+    return { ok: false, mensagem: require('./ia-groq').MENSAGENS.semChave };
   }
   return { ok: false, mensagem: MSG_MODO_INVALIDO };
 }
@@ -141,6 +160,7 @@ async function gerarResposta(caso, analise) {
     return respostaSimulada(caso, analise);
   }
   if (MODO_IA === 'gemini') return obterIaGemini().gerarResposta(caso, analise);
+  if (MODO_IA === 'groq') return obterIaGroq().gerarResposta(caso, analise);
   throw erroAmigavel(MSG_MODO_INVALIDO);
 }
 
@@ -151,7 +171,8 @@ async function analisarCaso(caso) {
     return analiseSimulada(caso);
   }
   if (MODO_IA === 'gemini') return obterIaGemini().analisarCaso(caso);
+  if (MODO_IA === 'groq') return obterIaGroq().analisarCaso(caso);
   throw erroAmigavel(MSG_MODO_INVALIDO);
 }
 
-module.exports = { analisarCaso, gerarResposta, situacaoConfiguracao, MODO_IA, MODELO_GEMINI, MSG_MODO_INVALIDO };
+module.exports = { analisarCaso, gerarResposta, situacaoConfiguracao, MODO_IA, MODELO_GEMINI, MODELO_GROQ, MSG_MODO_INVALIDO };

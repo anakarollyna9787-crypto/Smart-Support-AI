@@ -2,7 +2,7 @@
 // Smart Support AI - Testes da seleção de modo (MODO_IA)
 //
 // Confere server/ia.js e o servidor (server/server.js) nos modos
-// "simulado" e "gemini", com uma "rede falsa" para o Google.
+// "simulado", "gemini" e "groq", com uma "rede falsa" para o Google e a Groq.
 // NENHUMA chamada real é feita: qualquer acesso que não seja ao
 // próprio servidor de teste (127.0.0.1) é bloqueado e conta como falha.
 //
@@ -20,8 +20,10 @@ const RAIZ = path.join(__dirname, '..');
 const CAMINHOS = {
   ia: require.resolve('../server/ia'),
   gemini: require.resolve('../server/ia-gemini'),
+  groq: require.resolve('../server/ia-groq'),
   real: require.resolve('../server/ia-real'),
   servidor: require.resolve('../server/server'),
+  protecao: require.resolve('../server/protecao'),
 };
 const CHAVE_FALSA = 'AIzaSyFALSA-CHAVE-SO-PARA-TESTE-00000000';
 const CHAVE_FALSA_AQ = 'AQ.FALSA-CHAVE-SO-PARA-TESTE_000000000000000000000';
@@ -35,7 +37,9 @@ const ANALISE_OK = {
   contradicoes: ['Cartão de crédito × boleto pendente.'],
   proximoPasso: 'Verificar o pedido e o pagamento, sem prometer prazo.',
 };
-const VARIAVEIS = ['MODO_IA', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'MODELO_GEMINI', 'TEMPO_LIMITE_IA_MS', 'PORTA'];
+const CHAVE_FALSA_GROQ = 'gsk_FALSAchaveSOparaTESTE0000000000000000000000';
+const VARIAVEIS = ['MODO_IA', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'GROQ_BASE_URL', 'ANTHROPIC_API_KEY', 'MODELO_GEMINI', 'TEMPO_LIMITE_IA_MS', 'PORTA',
+  'LIMITE_IP_JANELA', 'JANELA_IP_MS', 'LIMITE_IP_DIA', 'LIMITE_GLOBAL_DIA', 'LIMITE_SIMULTANEAS', 'PROXIES_CONFIAVEIS'];
 const { MENSAGENS } = require('../server/ia-gemini');
 delete require.cache[CAMINHOS.gemini]; // cada teste carrega os módulos do zero
 
@@ -123,7 +127,29 @@ async function esperaErro(promessa, mensagemEsperada) {
 }
 
 const semChave = (texto) => !texto.includes(CHAVE_FALSA) && !texto.includes(CHAVE_FALSA_AQ)
-  && !/AIza[0-9A-Za-z_-]{10,}/.test(texto) && !/\bAQ\.[0-9A-Za-z_.-]{20,}/.test(texto);
+  && !/AIza[0-9A-Za-z_-]{10,}/.test(texto) && !/\bAQ\.[0-9A-Za-z_.-]{20,}/.test(texto)
+  && !texto.includes(CHAVE_FALSA_GROQ) && !/\bgsk_[0-9A-Za-z]{20,}/.test(texto);
+
+// Respostas do "servidor da Groq" (formato Chat Completions).
+const conclusaoGroq = (texto) => json(200, {
+  id: 'chatcmpl-teste', object: 'chat.completion', created: 0, model: 'openai/gpt-oss-120b',
+  choices: [{ index: 0, message: { role: 'assistant', content: texto }, finish_reason: 'stop' }],
+});
+// Responde à análise (com formato JSON) e à resposta (texto) corretamente.
+const groqOk = (texto = 'Olá! Texto da Groq.\n\nAtenciosamente,\n[Seu nome]') => () => {
+  const corpo = pedidos[pedidos.length - 1].corpo;
+  return (corpo && corpo.response_format ? conclusaoGroq(JSON.stringify(ANALISE_OK)) : conclusaoGroq(texto))();
+};
+const erroGroq = (status, codigo, mensagem = 'erro simulado') => json(status, { error: { message: mensagem, type: 'invalid_request_error', code: codigo } });
+const { MENSAGENS: MENSAGENS_GROQ } = require('../server/ia-groq');
+delete require.cache[CAMINHOS.groq];
+
+// Limites padrão da demonstração, informados em /api/status (sem IPs nem contagens).
+const DEMO_PADRAO = { limitePorJanela: 6, janelaMinutos: 10, limitePorDia: 20, limiteGlobalDia: 200, esgotadoHoje: false };
+// Mensagem neutra que o visitante vê quando a configuração do servidor está incompleta.
+const MSG_CONFIG_PUBLICA = 'O serviço de IA não está disponível no momento por um problema de configuração do servidor. Tente novamente mais tarde.';
+// O visitante nunca vê detalhes do .env nem nomes de variáveis.
+const semDetalheInterno = (texto) => !/.env|_API_KEY|MODO_IA|MODELO_GEMINI/.test(texto);
 
 // ============================================================
 describe('1. Escolha do modo', () => {
@@ -136,6 +162,7 @@ describe('1. Escolha do modo', () => {
   test('MODO_IA aceita maiúsculas e espaços nas pontas', () => {
     assert.equal(carregarIa({ MODO_IA: ' Simulado ' }).MODO_IA, 'simulado');
     assert.equal(carregarIa({ MODO_IA: 'GEMINI' }).MODO_IA, 'gemini');
+    assert.equal(carregarIa({ MODO_IA: ' Groq ' }).MODO_IA, 'groq');
   });
 
   test('o modelo do modo gemini é o oficial: gemini-3.8-flash', () => {
@@ -153,9 +180,15 @@ describe('1. Escolha do modo', () => {
       await esperaErro(ia.gerarResposta(CASO, ANALISE_OK), ia.MSG_MODO_INVALIDO);
       assert.equal(pedidos.length, 0);
       assert.equal(require.cache[CAMINHOS.gemini], undefined, 'o Gemini não deveria ser carregado');
+      assert.equal(require.cache[CAMINHOS.groq], undefined, 'a Groq não deveria ser carregada');
       assert.equal(require.cache[CAMINHOS.real], undefined, 'a Anthropic não deveria ser carregada');
     });
   }
+
+  test('a mensagem de modo inválido cita os três modos aceitos', () => {
+    const { MSG_MODO_INVALIDO } = carregarIa({ MODO_IA: 'qualquer' });
+    for (const modo of ['simulado', 'gemini', 'groq']) assert.ok(MSG_MODO_INVALIDO.includes(`MODO_IA=${modo}`));
+  });
 });
 
 // ============================================================
@@ -164,6 +197,7 @@ describe('2. Modo simulado continua igual', () => {
     ['padrão (sem MODO_IA)', {}],
     ['MODO_IA=simulado', { MODO_IA: 'simulado' }],
     ['MODO_IA=simulado com GEMINI_API_KEY presente', { MODO_IA: 'simulado', GEMINI_API_KEY: CHAVE_FALSA }],
+    ['MODO_IA=simulado com GROQ_API_KEY presente', { MODO_IA: 'simulado', GROQ_API_KEY: CHAVE_FALSA_GROQ }],
   ]) {
     test(`${descricao}: análise e resposta simuladas, sem rede e sem carregar o Gemini`, async () => {
       const ia = carregarIa(ambiente);
@@ -176,6 +210,7 @@ describe('2. Modo simulado continua igual', () => {
       assert.match(resposta.texto, /^Olá!/);
       assert.equal(pedidos.length, 0);
       assert.equal(require.cache[CAMINHOS.gemini], undefined, 'o modo simulado não deveria carregar o Gemini');
+      assert.equal(require.cache[CAMINHOS.groq], undefined, 'o modo simulado não deveria carregar a Groq');
       assert.equal(require.cache[CAMINHOS.real], undefined, 'o modo simulado não deveria carregar a Anthropic');
     });
   }
@@ -202,6 +237,7 @@ describe('3. Modo gemini usa a integração correta', () => {
     }
     assert.ok(pedidos[0].corpo.response_format, 'a análise deve pedir o formato JSON das 6 partes');
     assert.equal(require.cache[CAMINHOS.gemini] !== undefined, true);
+    assert.equal(require.cache[CAMINHOS.groq], undefined, 'o modo gemini não deveria carregar a Groq');
     assert.equal(require.cache[CAMINHOS.real], undefined, 'a Anthropic não deveria ser carregada');
   });
 
@@ -223,6 +259,101 @@ describe('3. Modo gemini usa a integração correta', () => {
     const ia = carregarIa({ MODO_IA: 'gemini', GEMINI_API_KEY: CHAVE_FALSA });
     await esperaErro(ia.gerarResposta(CASO, { problema: 'x' }), MENSAGENS.analiseInvalida);
     assert.equal(pedidos.length, 0);
+  });
+});
+
+// ============================================================
+describe('3b. Modo groq usa a integração correta', () => {
+  test('análise e resposta vêm do ia-groq.js (simulado = false), com o modelo oficial, em dois pedidos', async () => {
+    responder = groqOk();
+    const ia = carregarIa({ MODO_IA: 'groq', GROQ_API_KEY: CHAVE_FALSA_GROQ });
+    assert.equal(ia.MODELO_GROQ, 'openai/gpt-oss-120b');
+    assert.equal(require('../server/ia-groq').MODELO_PADRAO, ia.MODELO_GROQ);
+    assert.deepEqual(ia.situacaoConfiguracao(), { ok: true });
+
+    const analise = await ia.analisarCaso(CASO);
+    assert.deepEqual(analise, { simulado: false, ...ANALISE_OK });
+    assert.equal(pedidos.length, 1, 'a análise não pode gerar a resposta automaticamente');
+    const resposta = await ia.gerarResposta(CASO, analise);
+    assert.deepEqual(resposta, { simulado: false, texto: 'Olá! Texto da Groq.\n\nAtenciosamente,\n[Seu nome]' });
+
+    assert.equal(pedidos.length, 2, 'um pedido para a análise e um para a resposta');
+    for (const p of pedidos) {
+      assert.match(p.url, /^https:\/\/api\.groq\.com\//);
+      assert.equal(p.corpo.model, 'openai/gpt-oss-120b');
+      assert.equal(p.cabecalhos.authorization, `Bearer ${CHAVE_FALSA_GROQ}`);
+    }
+    assert.equal(pedidos[0].corpo.response_format.json_schema.strict, true);
+    assert.equal(pedidos[1].corpo.response_format, undefined);
+    assert.notEqual(require.cache[CAMINHOS.groq], undefined);
+    assert.equal(require.cache[CAMINHOS.gemini], undefined, 'o modo groq não deveria carregar o Gemini');
+    assert.equal(require.cache[CAMINHOS.real], undefined, 'a Anthropic não deveria ser carregada');
+  });
+
+  test('GROQ_BASE_URL definido no ambiente não desvia os pedidos (endereço oficial fixo)', async () => {
+    responder = groqOk();
+    const ia = carregarIa({ MODO_IA: 'groq', GROQ_API_KEY: CHAVE_FALSA_GROQ, GROQ_BASE_URL: 'https://desvio.invalido.example' });
+    const analise = await ia.analisarCaso(CASO);
+    await ia.gerarResposta(CASO, analise);
+    assert.equal(pedidos.length, 2);
+    for (const p of pedidos) assert.equal(p.url, 'https://api.groq.com/openai/v1/chat/completions');
+  });
+
+  test('carregar o ia.js no modo groq não faz nenhum pedido nem carrega a Groq (só ao analisar)', () => {
+    responder = groqOk();
+    carregarIa({ MODO_IA: 'groq', GROQ_API_KEY: CHAVE_FALSA_GROQ });
+    assert.equal(pedidos.length, 0);
+    assert.equal(require.cache[CAMINHOS.groq], undefined);
+  });
+
+  test('a chave do Gemini não serve para o modo groq', async () => {
+    responder = groqOk();
+    const ia = carregarIa({ MODO_IA: 'groq', GEMINI_API_KEY: CHAVE_FALSA });
+    assert.deepEqual(ia.situacaoConfiguracao(), { ok: false, mensagem: MENSAGENS_GROQ.semChave });
+    await esperaErro(ia.analisarCaso(CASO), MENSAGENS_GROQ.semChave);
+    assert.equal(pedidos.length, 0);
+  });
+
+  for (const [descricao, ambiente] of [
+    ['ausente', { MODO_IA: 'groq' }],
+    ['vazia', { MODO_IA: 'groq', GROQ_API_KEY: '' }],
+    ['só espaços', { MODO_IA: 'groq', GROQ_API_KEY: '   ' }],
+  ]) {
+    test(`chave ${descricao}: erro de configuração claro e nenhuma chamada`, async () => {
+      responder = groqOk();
+      const ia = carregarIa(ambiente);
+      assert.deepEqual(ia.situacaoConfiguracao(), { ok: false, mensagem: MENSAGENS_GROQ.semChave });
+      await esperaErro(ia.analisarCaso(CASO), MENSAGENS_GROQ.semChave);
+      await esperaErro(ia.gerarResposta(CASO, ANALISE_OK), MENSAGENS_GROQ.semChave);
+      assert.equal(pedidos.length, 0);
+    });
+  }
+
+  for (const [descricao, resposta, mensagem] of [
+    ['limite de uso (429)', erroGroq(429, 'rate_limit_exceeded', `limite ${CHAVE_FALSA_GROQ}`), MENSAGENS_GROQ.limiteUso],
+    ['indisponível (503)', erroGroq(503, 'service_unavailable'), MENSAGENS_GROQ.indisponivel],
+    ['chave recusada (401)', erroGroq(401, 'invalid_api_key'), MENSAGENS_GROQ.chaveInvalida],
+  ]) {
+    test(`${descricao}: erro amigável, um único pedido, sem troca silenciosa para o simulado`, async () => {
+      responder = resposta;
+      const ia = carregarIa({ MODO_IA: 'groq', GROQ_API_KEY: CHAVE_FALSA_GROQ });
+      await esperaErro(ia.analisarCaso(CASO), mensagem);
+      assert.equal(pedidos.length, 1);
+      assert.ok(registros.every(semChave), 'a chave apareceu no terminal');
+    });
+  }
+
+  test('tempo esgotado: respeita TEMPO_LIMITE_IA_MS e não tenta de novo', async () => {
+    responder = travado();
+    const ia = carregarIa({ MODO_IA: 'groq', GROQ_API_KEY: CHAVE_FALSA_GROQ, TEMPO_LIMITE_IA_MS: '300' });
+    await esperaErro(ia.analisarCaso(CASO), MENSAGENS_GROQ.demora);
+    assert.equal(pedidos.length, 1);
+  });
+
+  test('ia.js não lê nem repassa o valor da chave da Groq (só confere se existe)', () => {
+    const codigo = fs.readFileSync(CAMINHOS.ia, 'utf8');
+    assert.ok(!/\bgsk_[0-9A-Za-z]{20,}/.test(codigo));
+    assert.ok(!/console\.[a-z]+\([^)]*GROQ_API_KEY/.test(codigo), 'ia.js não pode registrar a chave');
   });
 });
 
@@ -329,7 +460,7 @@ describe('7. Servidor (HTTP) nos dois modos', () => {
   test('simulado: /api/status informa o modo e a análise/resposta continuam simuladas', async () => {
     await ligarServidor({ MODO_IA: 'simulado' });
     const status = await (await fetch(`${base}/api/status`)).json();
-    assert.deepEqual(status, { status: 'funcionando', modoIA: 'simulado', configuracaoOk: true });
+    assert.deepEqual(status, { status: 'funcionando', modoIA: 'simulado', configuracaoOk: true, demonstracao: DEMO_PADRAO });
 
     const analise = await (await postar('/api/analisar', CASO)).json();
     assert.equal(analise.simulado, true);
@@ -338,18 +469,20 @@ describe('7. Servidor (HTTP) nos dois modos', () => {
     assert.equal(pedidos.length, 0);
   });
 
-  test('gemini sem chave: /api/status avisa o erro de configuração e a análise falha sem chamada', async () => {
+  test('gemini sem chave: /api/status avisa o erro de configuração (sem citar o .env) e a análise falha sem chamada', async () => {
     responder = googleOk();
     await ligarServidor({ MODO_IA: 'gemini' });
-    const status = await (await fetch(`${base}/api/status`)).json();
-    assert.deepEqual(status, {
-      status: 'funcionando', modoIA: 'gemini', configuracaoOk: false, modelo: 'gemini-3.8-flash', erroConfiguracao: MENSAGENS.semChave,
+    const textoStatus = await (await fetch(`${base}/api/status`)).text();
+    assert.deepEqual(JSON.parse(textoStatus), {
+      status: 'funcionando', modoIA: 'gemini', configuracaoOk: false, modelo: 'gemini-3.8-flash', erroConfiguracao: MSG_CONFIG_PUBLICA, demonstracao: DEMO_PADRAO,
     });
-    assert.ok(registros.some((l) => l.includes(MENSAGENS.semChave)), 'o terminal deveria avisar na inicialização');
+    assert.ok(registros.some((l) => l.includes(MENSAGENS.semChave)), 'o terminal deveria avisar na inicialização (com o detalhe)');
 
     const r = await postar('/api/analisar', CASO);
     assert.equal(r.status, 500);
-    assert.deepEqual(await r.json(), { erro: MENSAGENS.semChave });
+    const textoErro = await r.text();
+    assert.deepEqual(JSON.parse(textoErro), { erro: MSG_CONFIG_PUBLICA });
+    assert.ok(semDetalheInterno(textoStatus) && semDetalheInterno(textoErro), 'o visitante viu detalhes do .env');
     assert.equal(pedidos.length, 0);
   });
 
@@ -357,7 +490,7 @@ describe('7. Servidor (HTTP) nos dois modos', () => {
     responder = googleOk();
     await ligarServidor({ MODO_IA: 'gemini', GEMINI_API_KEY: CHAVE_FALSA });
     const textoStatus = await (await fetch(`${base}/api/status`)).text();
-    assert.deepEqual(JSON.parse(textoStatus), { status: 'funcionando', modoIA: 'gemini', configuracaoOk: true, modelo: 'gemini-3.8-flash' });
+    assert.deepEqual(JSON.parse(textoStatus), { status: 'funcionando', modoIA: 'gemini', configuracaoOk: true, modelo: 'gemini-3.8-flash', demonstracao: DEMO_PADRAO });
     assert.equal(pedidos.length, 0, 'abrir o status não pode chamar a API');
 
     const textoAnalise = await (await postar('/api/analisar', CASO)).text();
@@ -388,13 +521,67 @@ describe('7. Servidor (HTTP) nos dois modos', () => {
     assert.equal(r.status, 400);
     assert.equal(pedidos.length, 0);
   });
+
+  test('groq sem chave: /api/status avisa o erro de configuração e a análise falha sem chamada', async () => {
+    responder = groqOk();
+    await ligarServidor({ MODO_IA: 'groq' });
+    const status = await (await fetch(`${base}/api/status`)).json();
+    assert.deepEqual(status, {
+      status: 'funcionando', modoIA: 'groq', configuracaoOk: false, modelo: 'openai/gpt-oss-120b', erroConfiguracao: MENSAGENS_GROQ.semChave, demonstracao: DEMO_PADRAO,
+    });
+    assert.ok(semDetalheInterno(MENSAGENS_GROQ.semChave), 'a mensagem da Groq não pode citar o .env');
+    assert.ok(registros.some((l) => l.includes('Modo da IA: groq (modelo openai/gpt-oss-120b)')));
+    assert.ok(registros.some((l) => l.includes(MENSAGENS_GROQ.semChave)), 'o terminal deveria avisar na inicialização');
+
+    const r = await postar('/api/analisar', CASO);
+    assert.equal(r.status, 500);
+    assert.deepEqual(await r.json(), { erro: MENSAGENS_GROQ.semChave });
+    assert.equal(pedidos.length, 0);
+  });
+
+  test('groq com chave: análise e resposta pela Groq; a chave não aparece no status nem nas respostas', async () => {
+    responder = groqOk();
+    await ligarServidor({ MODO_IA: 'groq', GROQ_API_KEY: CHAVE_FALSA_GROQ });
+    const textoStatus = await (await fetch(`${base}/api/status`)).text();
+    assert.deepEqual(JSON.parse(textoStatus), { status: 'funcionando', modoIA: 'groq', configuracaoOk: true, modelo: 'openai/gpt-oss-120b', demonstracao: DEMO_PADRAO });
+    assert.equal(pedidos.length, 0, 'abrir o status não pode chamar a API');
+
+    const textoAnalise = await (await postar('/api/analisar', CASO)).text();
+    const analise = JSON.parse(textoAnalise);
+    assert.deepEqual(analise, { simulado: false, ...ANALISE_OK });
+    assert.equal(pedidos.length, 1, 'a análise não pode gerar a resposta automaticamente');
+
+    const textoResposta = await (await postar('/api/gerar-resposta', { caso: CASO, analise })).text();
+    assert.equal(JSON.parse(textoResposta).simulado, false);
+    assert.equal(pedidos.length, 2);
+    for (const t of [textoStatus, textoAnalise, textoResposta, ...registros]) assert.ok(semChave(t), 'a chave apareceu');
+  });
+
+  test('groq com erro da API: HTTP 500 com a mensagem clara, sem análise simulada', async () => {
+    responder = erroGroq(429, 'rate_limit_exceeded', `cota da chave ${CHAVE_FALSA_GROQ}`);
+    await ligarServidor({ MODO_IA: 'groq', GROQ_API_KEY: CHAVE_FALSA_GROQ });
+    const r = await postar('/api/analisar', CASO);
+    assert.equal(r.status, 500);
+    const texto = await r.text();
+    assert.deepEqual(JSON.parse(texto), { erro: MENSAGENS_GROQ.limiteUso });
+    assert.ok(semChave(texto) && registros.every(semChave));
+  });
+
+  test('gerar resposta sem análise continua bloqueado no modo groq (sem chamada)', async () => {
+    responder = groqOk();
+    await ligarServidor({ MODO_IA: 'groq', GROQ_API_KEY: CHAVE_FALSA_GROQ });
+    const r = await postar('/api/gerar-resposta', { caso: CASO });
+    assert.equal(r.status, 400);
+    assert.equal(pedidos.length, 0);
+  });
 });
 
 // ============================================================
 describe('8. Interface e .env', () => {
-  test('a tela mostra "Modo Gemini" e avisa erro de configuração informado pelo servidor', () => {
+  test('a tela mostra "IA real · Gemini" e avisa erro de configuração informado pelo servidor', () => {
     const app = fs.readFileSync(path.join(RAIZ, 'public', 'app.js'), 'utf8');
-    assert.ok(app.includes("gemini: 'Modo Gemini'"));
+    assert.ok(app.includes("gemini: 'IA real · Gemini'"));
+    assert.ok(app.includes("groq: 'IA real · Groq'"));
     assert.ok(app.includes('dados.configuracaoOk === false'));
     assert.ok(app.includes('dados.erroConfiguracao'));
   });
