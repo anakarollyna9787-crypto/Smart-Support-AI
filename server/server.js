@@ -16,6 +16,10 @@ const { analisarCaso, gerarResposta, situacaoConfiguracao, MODO_IA, MODELO_GEMIN
 //    tamanho da análise, iguais em todos os modos (ver server/protecao.js).
 const { criarProtecao, lerConfiguracao, analiseDentroDosLimites, copiarAnalise } = require('./protecao');
 
+//    Diagnóstico TEMPORÁRIO da cadeia de proxies (desligado por padrão;
+//    só liga com DIAGNOSTICO_IP_TOKEN). Ver server/diagnostico-ip.js.
+const { criarDiagnosticoIp } = require('./diagnostico-ip');
+
 //    Modelo usado no modo atual (nenhum no modo simulado).
 const MODELO_ATUAL = { gemini: MODELO_GEMINI, groq: MODELO_GROQ }[MODO_IA];
 
@@ -67,6 +71,15 @@ app.get('/api/status', (req, res) => {
   dados.demonstracao = protecao.situacaoPublica();
   res.json(dados);
 });
+
+// 5b. Diagnóstico temporário de IP. Desligado, as rotas nem são criadas.
+//     Ligado, sem token válido (ou depois de expirar) responde como um
+//     endereço inexistente. Não passa pelos limites de IA e não chama a IA.
+const diagnosticoIp = criarDiagnosticoIp({ ambiente: process.env, trustProxy: protecao.configuracao.proxiesConfiaveis });
+if (diagnosticoIp.ativo) {
+  app.get('/api/diagnostico-ip', diagnosticoIp.rotaApi);
+  app.get('/diagnostico-ip', diagnosticoIp.pagina);
+}
 
 // Função de apoio: transforma qualquer valor em texto sem espaços nas pontas.
 function texto(valor) {
@@ -221,9 +234,11 @@ const servidor = app.listen(PORTA, () => {
     console.warn(`Aviso de configuração: ${configuracao.mensagem}`);
     console.warn('Confira MODO_IA e a chave do provedor (GEMINI_API_KEY ou GROQ_API_KEY) no .env local ou nas variáveis de ambiente do Render.');
   }
+  if (diagnosticoIp.ativo) console.warn('Diagnóstico de IP: ATIVO (temporário) por até 30 consultas ou 30 minutos.');
+  else if (diagnosticoIp.formatoInvalido) console.warn('Diagnóstico de IP: DIAGNOSTICO_IP_TOKEN com formato inválido; o diagnóstico continua desligado.');
   console.log(`Acesse: http://localhost:${servidor.address().port}`);
   console.log('Para encerrar, pressione Ctrl + C.');
 });
 
 // Exportado só para os testes automáticos poderem desligar o servidor.
-module.exports = { app, servidor, protecao, LIMITES, MSG_CONFIGURACAO_PUBLICA, MSG_SEM_ANALISE, MSG_ANALISE_RECUSADA, MSG_ANALISE_GRANDE };
+module.exports = { app, servidor, protecao, diagnosticoIp, LIMITES, MSG_CONFIGURACAO_PUBLICA, MSG_SEM_ANALISE, MSG_ANALISE_RECUSADA, MSG_ANALISE_GRANDE };
