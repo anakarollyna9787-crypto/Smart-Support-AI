@@ -200,6 +200,162 @@ function criarDiagnosticoIp({ ambiente = process.env, agora = () => Date.now(), 
   return { ativo: true, rotaApi, pagina, situacao: () => ({ consultas, expirado: expirado(), instancia }) };
 }
 
+// ------------------------------------------------------------
+// Lógica da página. Estas funções rodam NO NAVEGADOR (são copiadas para
+// dentro da página com Function.prototype.toString) e também são
+// exportadas para os testes automáticos. Por isso usam JavaScript simples
+// e não dependem de nada do Node.
+// ------------------------------------------------------------
+
+// Cabeçalhos de cada consulta. Os endereços falsos são de faixas reservadas
+// para documentação (RFC 5737), nunca IPs reais.
+//   normal: só o código de acesso;
+//   A: X-Forwarded-For e X-Real-IP falsos;
+//   B: CF-Connecting-IP e True-Client-IP falsos.
+function montarCabecalhos(codigo, teste) {
+  var cabecalhos = { 'Authorization': 'Bearer ' + codigo };
+  if (teste === 'A') {
+    cabecalhos['X-Forwarded-For'] = '198.51.100.7, 203.0.113.50';
+    cabecalhos['X-Real-IP'] = '198.51.100.10';
+  } else if (teste === 'B') {
+    cabecalhos['CF-Connecting-IP'] = '198.51.100.8';
+    cabecalhos['True-Client-IP'] = '198.51.100.9';
+  }
+  return cabecalhos;
+}
+
+// Copia do JSON de sucesso SOMENTE os campos conhecidos do diagnóstico,
+// cada um conferido pelo formato esperado. Campos extras são ignorados;
+// valores fora do formato viram null (ou são descartados, nas listas).
+// Devolve null se faltar a identificação mínima (instancia e consulta).
+function filtrarDiagnostico(dados) {
+  var HEX8 = /^[0-9a-f]{8}$/;
+  var FONTE = /^(req\.ip|socket|cf-connecting-ip|true-client-ip|x-real-ip|xff\[[1-9][0-9]?\])$/;
+  var TIPOS = ['público', 'privado/interno', 'Cloudflare', 'inválido ou vazio'];
+  var CABECALHOS = ['cf-ray', 'cf-ipcountry', 'cf-visitor', 'x-forwarded-proto', 'x-forwarded-host', 'forwarded', 'via', 'rndr-id'];
+  function inteiro(v) { return typeof v === 'number' && isFinite(v) && Math.floor(v) === v && v >= 0 && v <= 100000 ? v : null; }
+  function propria(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+  if (!dados || typeof dados !== 'object' || Array.isArray(dados)) return null;
+  var instancia = typeof dados.instancia === 'string' && HEX8.test(dados.instancia) ? dados.instancia : null;
+  var consulta = inteiro(dados.consulta);
+  if (instancia === null || consulta === null) return null;
+
+  var fontes = {};
+  if (dados.fontes && typeof dados.fontes === 'object' && !Array.isArray(dados.fontes)) {
+    var nomes = Object.keys(dados.fontes);
+    for (var i = 0; i < nomes.length && i < 30; i++) {
+      var nome = nomes[i];
+      if (!FONTE.test(nome)) continue;
+      var f = dados.fontes[nome];
+      if (!f || typeof f !== 'object') { fontes[nome] = null; continue; }
+      fontes[nome] = {
+        apelido: typeof f.apelido === 'string' && HEX8.test(f.apelido) ? f.apelido : null,
+        versao: f.versao === 'ipv4' || f.versao === 'ipv6' ? f.versao : null,
+        tipo: TIPOS.indexOf(f.tipo) >= 0 ? f.tipo : null,
+      };
+    }
+  }
+  var coincidencias = [];
+  if (Array.isArray(dados.coincidencias)) {
+    for (var j = 0; j < dados.coincidencias.length && j < 30; j++) {
+      var c = dados.coincidencias[j];
+      if (typeof c !== 'string' || c.length > 300) continue;
+      var partes = c.split(' = ');
+      var valida = partes.length > 1;
+      for (var p = 0; p < partes.length; p++) if (!FONTE.test(partes[p]) || !propria(fontes, partes[p])) valida = false;
+      if (valida) coincidencias.push(c);
+    }
+  }
+  var presentes = [];
+  if (Array.isArray(dados.cabecalhosPresentes)) {
+    for (var k = 0; k < CABECALHOS.length; k++) if (dados.cabecalhosPresentes.indexOf(CABECALHOS[k]) >= 0) presentes.push(CABECALHOS[k]);
+  }
+  return {
+    instancia: instancia,
+    consulta: consulta,
+    consultasRestantes: inteiro(dados.consultasRestantes),
+    minutosRestantes: inteiro(dados.minutosRestantes),
+    trustProxy: inteiro(dados.trustProxy),
+    quantidadeXForwardedFor: inteiro(dados.quantidadeXForwardedFor),
+    fontes: fontes,
+    coincidencias: coincidencias,
+    cabecalhosPresentes: presentes,
+  };
+}
+
+// Classifica uma resposta já lida como texto. Nunca guarda o corpo; do JSON
+// de sucesso guarda só os campos conhecidos (filtrarDiagnostico).
+//   sucesso:  2xx com o JSON do diagnóstico;
+//   recusado: JSON com status de erro (vindo do aplicativo);
+//   outra:    qualquer outra coisa (HTML de um proxy, por exemplo).
+// O Content-Type só é repetido se estiver na lista fixa; senão, "(outro)".
+function interpretarResposta(status, tipoConteudo, temCfRay, corpo) {
+  var PERMITIDOS = ['text/html', 'text/plain', 'application/json'];
+  var codigo = typeof status === 'number' && status >= 100 && status <= 599 ? Math.floor(status) : 0;
+  var bruto = typeof tipoConteudo === 'string' ? tipoConteudo.split(';')[0].trim().toLowerCase() : '';
+  var tipo = !bruto ? '(ausente)' : (PERMITIDOS.indexOf(bruto) >= 0 ? bruto : '(outro)');
+  var dados = null;
+  try { dados = JSON.parse(corpo); } catch (e) { dados = null; }
+  var objeto = dados !== null && typeof dados === 'object' && !Array.isArray(dados);
+  var filtrado = objeto && codigo >= 200 && codigo < 300 ? filtrarDiagnostico(dados) : null;
+  if (filtrado) return { tipo: 'sucesso', status: codigo, dados: filtrado };
+  if (objeto && (codigo < 200 || codigo >= 300)) return { tipo: 'recusado', status: codigo };
+  return { tipo: 'outra', status: codigo, json: objeto, contentType: tipo, cfRay: temCfRay === true };
+}
+
+// Faz a consulta. "buscar" é o fetch (no navegador, window.fetch).
+// Só falhas do próprio pedido (rede, conexão cortada, corpo interrompido)
+// viram "rede"; qualquer resposta HTTP é classificada por interpretarResposta.
+function consultarDiagnostico(codigo, teste, buscar) {
+  var cabecalhos = montarCabecalhos(codigo, teste);
+  var pedido;
+  try {
+    pedido = buscar('/api/diagnostico-ip', { method: 'GET', headers: cabecalhos, cache: 'no-store', referrerPolicy: 'no-referrer', credentials: 'omit' });
+  } catch (e) {
+    return Promise.resolve({ tipo: 'rede' });
+  }
+  return Promise.resolve(pedido).then(function (r) {
+    var tipoConteudo = r.headers.get('content-type');
+    var temCfRay = r.headers.get('cf-ray') !== null;
+    return r.text().then(function (corpo) {
+      return interpretarResposta(r.status, tipoConteudo, temCfRay, corpo);
+    }, function () { return { tipo: 'rede' }; });
+  }, function () { return { tipo: 'rede' }; });
+}
+
+// Monta o aviso e o registro do histórico. Nunca inclui o corpo de uma
+// resposta que não seja o JSON de sucesso, nem o código de acesso.
+function descreverResultado(resultado, rotulo) {
+  if (resultado.tipo === 'sucesso') {
+    var d = resultado.dados;
+    return {
+      aviso: 'Consulta ' + d.consulta + ' concluída. Restam ' + d.consultasRestantes + ' consultas e cerca de ' + d.minutosRestantes + ' min.',
+      registro: rotulo + '\n' + JSON.stringify(d, null, 2),
+    };
+  }
+  if (resultado.tipo === 'recusado') {
+    var texto = 'Recusado pelo servidor (HTTP ' + resultado.status + ')' +
+      (resultado.status === 404 ? ': código incorreto, diagnóstico expirado ou limite de consultas atingido.' : '.');
+    return { aviso: texto, registro: rotulo + '\n' + texto };
+  }
+  if (resultado.tipo === 'outra') {
+    var resumo = 'Resposta que não veio do diagnóstico (' + (resultado.json ? 'JSON desconhecido' : 'não é JSON') + '; corpo omitido).\n' +
+      'Status HTTP: ' + resultado.status + '\n' +
+      'Content-Type: ' + resultado.contentType + '\n' +
+      'cf-ray: ' + (resultado.cfRay ? 'presente' : 'ausente');
+    return { aviso: 'Resposta inesperada (HTTP ' + resultado.status + '). Veja o resumo no resultado.', registro: rotulo + '\n' + resumo };
+  }
+  return { aviso: 'Não foi possível consultar. Verifique a conexão e tente de novo.', registro: null };
+}
+
+const ROTULOS = {
+  normal: 'NORMAL',
+  A: 'TESTE A: X-Forwarded-For e X-Real-IP falsos',
+  B: 'TESTE B: CF-Connecting-IP e True-Client-IP falsos',
+};
+
+const SCRIPT_PAGINA = [montarCabecalhos, filtrarDiagnostico, interpretarResposta, consultarDiagnostico, descreverResultado].map(String).join('\n');
+
 const PAGINA = `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -239,7 +395,10 @@ const PAGINA = `<!doctype html>
     </div>
     <div class="linha">
       <button type="button" id="normal">Consulta normal</button>
-      <button type="button" id="falsa">Consulta com cabeçalhos falsos</button>
+    </div>
+    <div class="linha">
+      <button type="button" id="testeA">Teste A: X-Forwarded-For e X-Real-IP falsos</button>
+      <button type="button" id="testeB">Teste B: CF-Connecting-IP e True-Client-IP falsos</button>
     </div>
     <p id="aviso" role="status"></p>
   </div>
@@ -250,7 +409,9 @@ const PAGINA = `<!doctype html>
   </div>
 </main>
 <script>
+${SCRIPT_PAGINA}
 (function () {
+  var ROTULOS = ${JSON.stringify(ROTULOS)};
   var campo = document.getElementById('codigo');
   var aviso = document.getElementById('aviso');
   var saida = document.getElementById('resultado');
@@ -259,29 +420,22 @@ const PAGINA = `<!doctype html>
     campo.type = campo.type === 'password' ? 'text' : 'password';
     this.textContent = campo.type === 'password' ? 'Mostrar código' : 'Ocultar código';
   });
-  function consultar(comFalsos) {
+  function consultar(teste) {
     var codigo = campo.value.trim().toUpperCase();
     if (codigo.length < 32) { aviso.textContent = 'Digite o código completo (pelo menos 32 caracteres).'; return; }
-    var cabecalhos = { 'Authorization': 'Bearer ' + codigo };
-    if (comFalsos) {
-      cabecalhos['X-Forwarded-For'] = '198.51.100.7, 203.0.113.50';
-      cabecalhos['CF-Connecting-IP'] = '198.51.100.8';
-      cabecalhos['True-Client-IP'] = '198.51.100.9';
-      cabecalhos['X-Real-IP'] = '198.51.100.10';
-    }
     aviso.textContent = 'Consultando…';
-    fetch('/api/diagnostico-ip', { method: 'GET', headers: cabecalhos, cache: 'no-store', referrerPolicy: 'no-referrer', credentials: 'omit' })
-      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
-      .then(function (x) {
-        if (!x.ok) { aviso.textContent = 'Recusado: código incorreto, diagnóstico expirado ou limite de consultas atingido.'; return; }
-        aviso.textContent = 'Consulta ' + x.d.consulta + ' concluída. Restam ' + x.d.consultasRestantes + ' consultas e cerca de ' + x.d.minutosRestantes + ' min.';
-        historico.push((comFalsos ? 'COM CABEÇALHOS FALSOS' : 'NORMAL') + '\\n' + JSON.stringify(x.d, null, 2));
+    consultarDiagnostico(codigo, teste, window.fetch.bind(window)).then(function (resultado) {
+      var texto = descreverResultado(resultado, ROTULOS[teste]);
+      aviso.textContent = texto.aviso;
+      if (texto.registro) {
+        historico.push(texto.registro);
         saida.textContent = historico.join('\\n\\n');
-      })
-      .catch(function () { aviso.textContent = 'Não foi possível consultar. Verifique a conexão e tente de novo.'; });
+      }
+    });
   }
-  document.getElementById('normal').addEventListener('click', function () { consultar(false); });
-  document.getElementById('falsa').addEventListener('click', function () { consultar(true); });
+  document.getElementById('normal').addEventListener('click', function () { consultar('normal'); });
+  document.getElementById('testeA').addEventListener('click', function () { consultar('A'); });
+  document.getElementById('testeB').addEventListener('click', function () { consultar('B'); });
   document.getElementById('copiar').addEventListener('click', function () {
     var texto = saida.textContent;
     if (navigator.clipboard) navigator.clipboard.writeText(texto).then(function () { aviso.textContent = 'Resultado copiado.'; }, function () { aviso.textContent = 'Selecione o texto e copie manualmente.'; });
@@ -292,4 +446,8 @@ const PAGINA = `<!doctype html>
 </body>
 </html>`;
 
-module.exports = { criarDiagnosticoIp, normalizar, lerToken, LIMITE_CONSULTAS, DURACAO_MS, MAX_CABECALHO, MAX_ENDERECOS };
+module.exports = {
+  criarDiagnosticoIp, normalizar, lerToken, LIMITE_CONSULTAS, DURACAO_MS, MAX_CABECALHO, MAX_ENDERECOS,
+  // Lógica da página, exportada só para os testes.
+  montarCabecalhos, filtrarDiagnostico, interpretarResposta, consultarDiagnostico, descreverResultado, ROTULOS,
+};

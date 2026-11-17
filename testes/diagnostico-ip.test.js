@@ -339,7 +339,8 @@ describe('6. Página para celular e computador', () => {
     let html = '';
     diag.pagina({ method: 'GET', originalUrl: '/diagnostico-ip' }, { set() {}, type() { return this; }, send(t) { html = t; } }, () => {});
     assert.ok(html.includes("'Authorization': 'Bearer ' + codigo"));
-    assert.ok(html.includes("fetch('/api/diagnostico-ip', {"));
+    assert.ok(html.includes("buscar('/api/diagnostico-ip', {"));
+    assert.ok(html.includes('window.fetch.bind(window)'));
     assert.ok(!/diagnostico-ip\?/.test(html), 'a URL não pode levar parâmetros');
     assert.ok(!/localStorage|sessionStorage|indexedDB|document\.cookie|<form/.test(html), 'a página não pode guardar o código nem usar formulário');
     assert.ok(html.includes("credentials: 'omit'") && html.includes("referrerPolicy: 'no-referrer'"));
@@ -351,5 +352,223 @@ describe('6. Página para celular e computador', () => {
     assert.equal(status.modoIA, 'simulado');
     const r = await fetch(`${base}/api/analisar`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(CASOS_FICTICIOS[0]) });
     assert.equal(r.status, 200);
+  });
+});
+
+// ============================================================
+describe('7. Página: tratamento de respostas e testes A/B separados', () => {
+  const diagMod = () => require('../server/diagnostico-ip');
+  const CABECALHOS_A = ['x-forwarded-for', 'x-real-ip'];
+  const CABECALHOS_B = ['cf-connecting-ip', 'true-client-ip'];
+  const MSG_REDE = 'Não foi possível consultar. Verifique a conexão e tente de novo.';
+
+  // Página gerada, sem servidor.
+  function gerarPagina() {
+    const diag = diagMod().criarDiagnosticoIp({ ambiente: { DIAGNOSTICO_IP_TOKEN: TOKEN } });
+    let html = '';
+    diag.pagina({ method: 'GET', originalUrl: '/diagnostico-ip' }, { set() {}, type() { return this; }, send(t) { html = t; } }, () => {});
+    return html;
+  }
+
+  // Servidor local qualquer (simula a borda/proxy). Guarda os cabeçalhos recebidos.
+  async function servidorFalso(responder) {
+    const recebidos = [];
+    const app = express();
+    app.use((req, res) => { recebidos.push(req.headers); responder(req, res); });
+    const s = app.listen(0, '127.0.0.1');
+    await new Promise((ok) => s.once('listening', ok));
+    const url = `http://127.0.0.1:${s.address().port}`;
+    const fechar = async () => { s.closeAllConnections(); await new Promise((ok) => s.close(ok)); };
+    return { buscar: (caminho, init) => fetch(`${url}${caminho}`, init), recebidos, fechar };
+  }
+
+  // Tudo o que a página mostraria ou permitiria copiar.
+  const textoVisivel = (r) => { const t = diagMod().descreverResultado(r, 'ROTULO'); return `${t.aviso}\n${t.registro || ''}`; };
+
+  test('cabeçalhos: normal só tem Authorization; A só X-Forwarded-For e X-Real-IP; B só CF-Connecting-IP e True-Client-IP', () => {
+    const { montarCabecalhos } = diagMod();
+    const nomes = (t) => Object.keys(montarCabecalhos(TOKEN, t)).map((n) => n.toLowerCase()).sort();
+    assert.deepEqual(nomes('normal'), ['authorization']);
+    assert.deepEqual(nomes('A'), ['authorization', ...CABECALHOS_A].sort());
+    assert.deepEqual(nomes('B'), ['authorization', ...CABECALHOS_B].sort());
+    assert.equal(montarCabecalhos(TOKEN, 'A').Authorization, `Bearer ${TOKEN}`);
+  });
+
+  test('a página tem os três botões, inclui a lógica testada e o script é JavaScript válido', () => {
+    const html = gerarPagina();
+    assert.ok(html.includes('id="normal"') && html.includes('id="testeA"') && html.includes('id="testeB"'));
+    assert.ok(!html.includes('id="falsa"'));
+    const { montarCabecalhos, filtrarDiagnostico, interpretarResposta, consultarDiagnostico, descreverResultado } = diagMod();
+    for (const f of [montarCabecalhos, filtrarDiagnostico, interpretarResposta, consultarDiagnostico, descreverResultado]) assert.ok(html.includes(String(f)), f.name);
+    assert.ok(!/r\.json\(\)/.test(html), 'a página não deve mais usar r.json()');
+    const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+    assert.doesNotThrow(() => new Function(script));
+  });
+
+  test('HTML 403 (com cf-ray): mostra status, Content-Type e "cf-ray: presente", sem o corpo, sem token e sem IPs', async () => {
+    const corpoHtml = `<!doctype html><html><body><h1>Error 1000</h1><p>Your IP: 203.0.113.50</p><p>${TOKEN}</p><script>x()</script></body></html>`;
+    const falso = await servidorFalso((req, res) => res.status(403).set('cf-ray', '8f1e2d3c4b5a6978-GRU').type('text/html; charset=UTF-8').send(corpoHtml));
+    try {
+      const r = await diagMod().consultarDiagnostico(TOKEN, 'B', falso.buscar);
+      assert.equal(r.tipo, 'outra');
+      assert.equal(r.status, 403);
+      assert.equal(r.contentType, 'text/html');
+      assert.equal(r.cfRay, true);
+      assert.equal(r.json, false);
+      const visivel = textoVisivel(r);
+      assert.match(visivel, /Status HTTP: 403/);
+      assert.match(visivel, /Content-Type: text\/html/);
+      assert.match(visivel, /cf-ray: presente/);
+      assert.ok(!visivel.includes(MSG_REDE), 'resposta HTTP não é falha de rede');
+      assert.ok(!/<|Error 1000|8f1e2d3c/.test(visivel), `corpo ou valor do cf-ray apareceu: ${visivel}`);
+      assert.ok(semIpsNemToken(visivel) && semIpsNemToken(JSON.stringify(r)));
+      // O teste B enviou só os cabeçalhos dele.
+      const h = falso.recebidos[0];
+      for (const n of CABECALHOS_B) assert.ok(h[n], n);
+      for (const n of CABECALHOS_A) assert.equal(h[n], undefined, n);
+    } finally { await falso.fechar(); }
+  });
+
+  test('HTML 403 sem cf-ray: informa "cf-ray: ausente"', async () => {
+    const falso = await servidorFalso((req, res) => res.status(403).type('html').send('<html>bloqueado 198.51.100.7</html>'));
+    try {
+      const r = await diagMod().consultarDiagnostico(TOKEN, 'A', falso.buscar);
+      assert.equal(r.cfRay, false);
+      const visivel = textoVisivel(r);
+      assert.match(visivel, /cf-ray: ausente/);
+      assert.ok(!visivel.includes('bloqueado') && semIpsNemToken(visivel));
+      const h = falso.recebidos[0];
+      for (const n of CABECALHOS_A) assert.ok(h[n], n);
+      for (const n of CABECALHOS_B) assert.equal(h[n], undefined, n);
+    } finally { await falso.fechar(); }
+  });
+
+  test('Content-Type: só text/html, text/plain e application/json são repetidos; o resto vira "(outro)"', () => {
+    const { interpretarResposta } = diagMod();
+    const tipo = (ct) => interpretarResposta(502, ct, false, '').contentType;
+    assert.equal(tipo(null), '(ausente)');
+    assert.equal(tipo(''), '(ausente)');
+    assert.equal(tipo('text/html; charset=UTF-8'), 'text/html');
+    assert.equal(tipo('TEXT/HTML'), 'text/html');
+    assert.equal(tipo('text/plain'), 'text/plain');
+    assert.equal(tipo('application/json; charset=utf-8'), 'application/json');
+    for (const estranho of ['application/xml', 'text/203.0.113.50', `text/${TOKEN.toLowerCase()}`, `text/html${TOKEN}<b>`,
+      'x'.repeat(200) + '/y', 'text/html2', ' application/json-x', 'image/svg+xml']) {
+      const r = interpretarResposta(403, estranho, true, '<html>203.0.113.50</html>');
+      assert.equal(r.contentType, '(outro)', estranho);
+      assert.ok(semIpsNemToken(textoVisivel(r)), estranho);
+      assert.match(textoVisivel(r), /Content-Type: \(outro\)/);
+    }
+  });
+
+  test('sucesso: só os campos conhecidos são exibidos; campos extras e valores fora do formato são ignorados', async () => {
+    const malicioso = {
+      instancia: '0052607c', consulta: 4, consultasRestantes: 26, minutosRestantes: 21, trustProxy: 1, quantidadeXForwardedFor: 3,
+      fontes: {
+        'req.ip': { apelido: 'a1b2c3d4', versao: 'ipv4', tipo: 'privado/interno', ip: '10.1.2.3' },
+        'cf-connecting-ip': { apelido: '203.0.113.50', versao: 'ipv9', tipo: `<b>${TOKEN}</b>` },
+        'xff[1]': { apelido: 'e5f6a7b8', versao: 'ipv4', tipo: 'público' },
+        'x-ip-real': { apelido: 'deadbeef', versao: 'ipv4', tipo: 'público' },
+        'xff[1] 198.51.100.7': null,
+      },
+      coincidencias: ['req.ip = xff[1]', 'req.ip = 203.0.113.50', 'x-ip-real = xff[1]', `${TOKEN} = req.ip`, 42],
+      cabecalhosPresentes: ['cf-ray', 'x-segredo', '198.51.100.7', 'via'],
+      ipReal: '203.0.113.50', token: TOKEN, html: '<script>x()</script>',
+    };
+    const falso = await servidorFalso((req, res) => res.status(200).json(malicioso));
+    try {
+      const r = await diagMod().consultarDiagnostico(TOKEN, 'normal', falso.buscar);
+      assert.equal(r.tipo, 'sucesso');
+      assert.deepEqual(r.dados, {
+        instancia: '0052607c', consulta: 4, consultasRestantes: 26, minutosRestantes: 21, trustProxy: 1, quantidadeXForwardedFor: 3,
+        fontes: {
+          'req.ip': { apelido: 'a1b2c3d4', versao: 'ipv4', tipo: 'privado/interno' },
+          'cf-connecting-ip': { apelido: null, versao: null, tipo: null },
+          'xff[1]': { apelido: 'e5f6a7b8', versao: 'ipv4', tipo: 'público' },
+        },
+        coincidencias: ['req.ip = xff[1]'],
+        cabecalhosPresentes: ['cf-ray', 'via'],
+      });
+      const visivel = textoVisivel(r);
+      assert.ok(semIpsNemToken(visivel), visivel);
+      for (const proibido of ['ipReal', 'x-ip-real', 'x-segredo', '<', 'deadbeef', 'ipv9']) assert.ok(!visivel.includes(proibido), proibido);
+    } finally { await falso.fechar(); }
+  });
+
+  test('sucesso sem identificação válida (instancia ou consulta fora do formato): tratado como resposta inesperada', () => {
+    const { interpretarResposta } = diagMod();
+    for (const dados of [
+      { instancia: '203.0.113.50', consulta: 1, fontes: {} },
+      { instancia: '0052607c', consulta: '1', fontes: {} },
+      { instancia: '0052607c', consulta: 1.5, fontes: {} },
+      { consulta: 1, fontes: {} },
+    ]) {
+      const r = interpretarResposta(200, 'application/json', false, JSON.stringify(dados));
+      assert.equal(r.tipo, 'outra', JSON.stringify(dados));
+      assert.ok(semIpsNemToken(textoVisivel(r)));
+    }
+  });
+
+  test('servidor real: o filtro mantém exatamente a resposta verdadeira do diagnóstico (nada se perde)', async () => {
+    await ligar({ DIAGNOSTICO_IP_TOKEN: TOKEN });
+    const bruto = await (await consultar(comToken({ 'X-Forwarded-For': '198.51.100.7, 10.1.2.3', 'CF-Connecting-IP': '198.51.100.7' }))).json();
+    assert.deepEqual(diagMod().filtrarDiagnostico(bruto), bruto);
+  });
+
+  test('JSON de erro (404 do aplicativo): "recusado", sem repetir o corpo', async () => {
+    const falso = await servidorFalso((req, res) => res.status(404).json({ erro: `detalhe ${TOKEN} 203.0.113.50` }));
+    try {
+      const r = await diagMod().consultarDiagnostico(TOKEN, 'normal', falso.buscar);
+      assert.deepEqual(r, { tipo: 'recusado', status: 404 });
+      const visivel = textoVisivel(r);
+      assert.match(visivel, /HTTP 404/);
+      assert.ok(!visivel.includes('detalhe') && semIpsNemToken(visivel) && !visivel.includes(MSG_REDE));
+    } finally { await falso.fechar(); }
+  });
+
+  test('JSON 200 que não é do diagnóstico: tratado como resposta inesperada, sem mostrar o conteúdo', () => {
+    const r = diagMod().interpretarResposta(200, 'application/json', false, JSON.stringify({ ip: '203.0.113.50' }));
+    assert.equal(r.tipo, 'outra');
+    assert.equal(r.json, true);
+    assert.ok(semIpsNemToken(textoVisivel(r)));
+  });
+
+  test('falha real de rede (porta fechada): mensagem de conexão, sem token nem IPs', async () => {
+    const falso = await servidorFalso(() => {});
+    await falso.fechar(); // a porta agora recusa conexões
+    const r = await diagMod().consultarDiagnostico(TOKEN, 'A', falso.buscar);
+    assert.deepEqual(r, { tipo: 'rede' });
+    const t = diagMod().descreverResultado(r, 'ROTULO');
+    assert.equal(t.aviso, MSG_REDE);
+    assert.equal(t.registro, null);
+  });
+
+  test('conexão cortada no meio da resposta e fetch que falha na hora: também "rede"', async () => {
+    const falso = await servidorFalso((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '1000' });
+      res.write('{"instancia":');
+      setImmediate(() => res.socket.destroy());
+    });
+    try {
+      assert.deepEqual(await diagMod().consultarDiagnostico(TOKEN, 'normal', falso.buscar), { tipo: 'rede' });
+    } finally { await falso.fechar(); }
+    assert.deepEqual(await diagMod().consultarDiagnostico(TOKEN, 'normal', () => { throw new TypeError('falhou'); }), { tipo: 'rede' });
+  });
+
+  test('servidor real: normal, A e B funcionam; código errado é "recusado"; nada sensível no resultado', async () => {
+    await ligar({ DIAGNOSTICO_IP_TOKEN: TOKEN });
+    const { consultarDiagnostico, descreverResultado, ROTULOS } = diagMod();
+    const buscar = (caminho, init) => fetch(`${base}${caminho}`, init);
+    for (const teste of ['normal', 'A', 'B']) {
+      const r = await consultarDiagnostico(TOKEN, teste, buscar);
+      assert.equal(r.tipo, 'sucesso', teste);
+      const visivel = descreverResultado(r, ROTULOS[teste]);
+      assert.ok(visivel.registro.startsWith(ROTULOS[teste]));
+      assert.ok(semIpsNemToken(`${visivel.aviso}\n${visivel.registro}`), teste);
+    }
+    const recusado = await consultarDiagnostico(OUTRO_TOKEN, 'normal', buscar);
+    assert.deepEqual(recusado, { tipo: 'recusado', status: 404 });
+    assert.ok(!textoVisivel(recusado).includes(OUTRO_TOKEN));
+    assert.equal(modulo.diagnosticoIp.situacao().consultas, 3);
   });
 });
