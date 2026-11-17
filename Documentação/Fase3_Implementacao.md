@@ -392,3 +392,84 @@ Pela API, os 5 casos fictícios geraram análise (6 partes) e resposta simuladas
 - Obter uma análise e uma resposta reais com o Caso 1 e, depois, testar os 5 casos fictícios e comparar com a validação feita com o Claude (Relatorio_Validacao_Prompt_v2.md).
 - Confirmar no primeiro sucesso o tratamento de chave inválida (400 API_KEY_INVALID), ainda baseado na documentação.
 - Iniciar o repositório git antes de publicar o projeto, conferindo que o .env não entra no envio.
+
+---
+
+Selo da análise (proteção da geração de resposta)
+
+Data: 16/11/2026 · Situação: implementada localmente (sem publicação) · Custo: nenhum
+
+Problema: a rota /api/gerar-resposta recebia a análise de volta do navegador e a enviava à IA como mensagem "assistant" (como se a própria IA a tivesse escrito). Formato e tamanho eram conferidos, mas o conteúdo podia ser adulterado: alguém poderia colocar instruções nos campos da análise e usar a cota da IA para gerar outro tipo de texto.
+
+Solução: o servidor assina a análise que ele mesmo gerou e só aceita, na geração da resposta, a análise com assinatura válida (arquivo server/selo-analise.js).
+
+- Em /api/analisar, depois de conferir a análise, o servidor calcula um HMAC-SHA256 do caso normalizado + as 6 partes da análise + o modo da IA + a expiração, e devolve o campo "selo" junto com a análise.
+- Em /api/gerar-resposta, antes dos limites de uso, o servidor recalcula a assinatura com o caso e a análise recebidos e compara em tempo constante. Qualquer diferença (uma letra, um item a mais, outra ordem, outro caso, outro modo, prazo vencido) é recusada com HTTP 400: "Não foi possível confirmar a análise. Analise o caso novamente antes de gerar a resposta." A IA não é chamada e nenhuma cota é gasta.
+- Formato do selo: "v1.<expiração>.<assinatura>" (cerca de 60 caracteres). Ele não contém nenhum texto do caso, e nada é guardado no servidor: sem banco, sem cache e sem sessão.
+- Validade: 30 minutos. Gerar a resposta de novo com o mesmo selo continua permitido (cada geração conta no limite, como antes).
+- Segredo: aleatório, criado quando o servidor inicia e mantido só na memória. Nenhuma variável de ambiente nova.
+- Tela: nenhuma mudança. O selo viaja dentro da análise que a tela já guarda e reenvia.
+
+Efeito conhecido: quando o serviço reinicia (deploy, hibernação do plano gratuito do Render), os selos antigos deixam de valer. Quem estiver no meio de um caso vê a mensagem acima e precisa analisar o caso de novo (uma chamada a mais). Se um dia houver mais de uma instância do servidor, será preciso um segredo compartilhado (variável de ambiente, com autorização).
+
+Risco que continua: a análise legítima é escrita pela IA, que pode ter sido influenciada por instruções escondidas na mensagem do cliente. Isso continua a cargo das regras dos Blocos A e B (prompts v2).
+
+Testes: testes/selo-analise.test.js (83 testes): selo válido, todas as alterações da análise (inclusive instruções maliciosas nos 6 campos), caso trocado, selo ausente, malformado, forjado, de outro caso, expirado, de outra instância e de outro modo, limites de uso preservados e nada no terminal. Os testes que enviam análises diretamente (protecao.test.js e ia-modos.test.js) passaram a usar o selo do servidor de teste.
+
+Prova de que os testes detectam erros: com uma versão sabotada do selo (que aceita qualquer coisa), 73 dos 83 testes falharam; os 10 restantes conferem o fluxo válido e o formato.
+
+---
+
+Estado atual
+
+Data: 16/11/2026
+
+Esta seção substitui, como retrato atual, a seção "Estado do MVP" de 14/11/2026 (mantida acima como registro histórico).
+
+1. Situação
+
+- A aplicação funciona de ponta a ponta no modo simulado, que continua sendo o modo ativo (MODO_IA=simulado), localmente e no Render.
+- Groq: integração implementada e testada só com simulações (rede falsa). Ainda não foi ativada e nunca fez uma chamada real.
+- Gemini: integração implementada e desativada; nenhuma análise real foi obtida (503 e tempo esgotado).
+- Anthropic (ia-real.js): implementada e testada com simulações, mas não está ligada ao servidor.
+- Proteção da demonstração pública (server/protecao.js): limite por visitante (6 chamadas a cada 10 minutos e 20 por dia), limite global (200 por dia), máximo de 2 chamadas simultâneas e limites de tamanho das entradas e da análise.
+- Identificação do visitante (server/ip-visitante.js): variável FONTE_IP. No Render, req.ip é um endereço interno, por isso o Render deve usar FONTE_IP=cloudflare (CF-Connecting-IP validado). A mudança está publicada no GitHub, mas FONTE_IP ainda não foi cadastrada no Render: até lá, o limite por visitante não funciona lá. Roteiro de validação: Guia_Demonstracao.md.
+- Selo da análise (server/selo-analise.js): implementado localmente, ainda sem publicação (ver seção anterior).
+
+2. Testes automáticos
+
+Comando: npm test (sem internet, sem chave e sem custo)
+
+| Arquivo | Testes | Resultado |
+|---|---|---|
+| testes/prompts-e-casos.test.js | 27 | 27 passaram |
+| testes/ia-real.test.js | 51 | 51 passaram |
+| testes/ia-gemini.test.js | 66 | 66 passaram |
+| testes/ia-groq.test.js | 69 | 69 passaram |
+| testes/ia-modos.test.js | 59 | 59 passaram |
+| testes/protecao.test.js | 74 | 74 passaram |
+| testes/ip-visitante.test.js | 99 | 99 passaram |
+| testes/selo-analise.test.js | 83 | 83 passaram |
+| testes/diagnostico-ip.test.js | 37 | 37 passaram |
+| Total | 565 | 565 passaram, 0 falhas |
+
+3. Itens do estado de 14/11/2026 já resolvidos
+
+- O projeto agora é um repositório git, publicado no GitHub, com o .env protegido pelo .gitignore.
+- O comando "npm test" existe e roda todos os testes.
+
+4. Limitações conhecidas
+
+- Modo simulado: a análise e a resposta são exemplos montados a partir dos campos do formulário; o texto da mensagem não é interpretado e as contradições não são verificadas.
+- Os prompts v2 foram validados com o Claude, não com o modelo da Groq (openai/gpt-oss-120b). A qualidade com a Groq ainda não foi avaliada.
+- Cada caso completo usa 2 chamadas do limite por visitante (análise e resposta). Com o limite de 6, o 4º caso seguido é bloqueado.
+- Os contadores de uso e o segredo do selo ficam só na memória: zeram quando o serviço reinicia (deploy ou hibernação do plano gratuito do Render).
+- Sem histórico, sem login e sem banco de dados: tudo fica na memória da página e some ao recarregar (regra de privacidade).
+
+5. Pendências antes de ativar a Groq
+
+- Publicar o selo da análise (commit e push autorizados).
+- Cadastrar FONTE_IP=cloudflare no Render e seguir a validação do Guia_Demonstracao.md, em modo simulado.
+- Remover DIAGNOSTICO_IP_TOKEN do Render depois da validação e, depois, o arquivo server/diagnostico-ip.js e seus testes.
+- Conferir no console da Groq os limites do nível gratuito do openai/gpt-oss-120b e a retenção de dados, e ajustar LIMITE_GLOBAL_DIA se necessário.
+- Com autorização, testar os casos fictícios com a Groq e comparar com a validação feita com o Claude (Relatorio_Validacao_Prompt_v2.md).

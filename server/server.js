@@ -16,6 +16,10 @@ const { analisarCaso, gerarResposta, situacaoConfiguracao, MODO_IA, MODELO_GEMIN
 //    tamanho da análise, iguais em todos os modos (ver server/protecao.js).
 const { criarProtecao, lerConfiguracao, lerFonteIp, analiseDentroDosLimites, copiarAnalise } = require('./protecao');
 
+//    Selo da análise: o servidor assina a análise que ele mesmo gerou e só
+//    aceita, na geração da resposta, a análise com selo válido. Ver server/selo-analise.js.
+const { criarSeloAnalise } = require('./selo-analise');
+
 //    Diagnóstico TEMPORÁRIO da cadeia de proxies (desligado por padrão;
 //    só liga com DIAGNOSTICO_IP_TOKEN). Ver server/diagnostico-ip.js.
 const { criarDiagnosticoIp } = require('./diagnostico-ip');
@@ -33,6 +37,8 @@ const app = express();
 //    req-ip (padrão, uso local) ou cloudflare (Render). Ver server/ip-visitante.js.
 const FONTE_IP = lerFonteIp(process.env);
 const protecao = criarProtecao(lerConfiguracao(process.env), { fonteIp: FONTE_IP.fonteIp });
+//    Segredo aleatório desta instância (só na memória; ao reiniciar, os selos antigos deixam de valer).
+const seloAnalise = criarSeloAnalise({ modo: MODO_IA });
 
 //    Não anuncia a tecnologia do servidor nos cabeçalhos.
 app.disable('x-powered-by');
@@ -130,15 +136,17 @@ function lerCaso(dados) {
 const MSG_SEM_ANALISE = 'Faça a análise do caso antes de gerar a resposta.';
 const MSG_ANALISE_RECUSADA = 'A análise recebida está incompleta ou passou do tamanho permitido. Analise o caso novamente antes de gerar a resposta.';
 const MSG_ANALISE_GRANDE = 'A análise gerada passou do tamanho permitido na demonstração. Tente novamente com um caso mais curto.';
+const MSG_ANALISE_NAO_CONFIRMADA = 'Não foi possível confirmar a análise. Analise o caso novamente antes de gerar a resposta.';
 
 // Lê a análise enviada pela tela (que pode ter sido adulterada) e confere
 // formato e tamanho de cada campo e lista. Só as 6 partes seguem adiante.
+// O selo (campo "selo" que o servidor acrescentou à análise) é lido à parte.
 function lerAnalise(valor) {
   if (!valor || typeof valor !== 'object' || Array.isArray(valor) || typeof valor.proximoPasso !== 'string') {
     return { erro: MSG_SEM_ANALISE };
   }
   if (!analiseDentroDosLimites(valor)) return { erro: MSG_ANALISE_RECUSADA };
-  return { analise: copiarAnalise(valor) };
+  return { analise: copiarAnalise(valor), selo: valor.selo };
 }
 
 // Confere os dados ANTES dos limites de uso: um pedido inválido é
@@ -156,6 +164,11 @@ function exigirCasoEAnalise(req, res, next) {
   if (erro) return res.status(400).json({ erro });
   const lida = lerAnalise(corpo.analise);
   if (lida.erro) return res.status(400).json({ erro: lida.erro });
+  // Só segue a análise que o próprio servidor gerou para ESTE caso, neste modo
+  // e dentro do prazo. Conferido antes dos limites: um pedido forjado não gasta cota.
+  if (!seloAnalise.verificar(caso, lida.analise, lida.selo).ok) {
+    return res.status(400).json({ erro: MSG_ANALISE_NAO_CONFIRMADA });
+  }
   res.locals.caso = caso;
   res.locals.analise = lida.analise;
   next();
@@ -183,7 +196,8 @@ app.post('/api/analisar', exigirCaso, ...protecao.middlewares, async (req, res) 
       console.error('Erro na análise: a análise gerada passou do tamanho permitido.');
       return res.status(500).json({ erro: MSG_ANALISE_GRANDE });
     }
-    res.json(analise);
+    // Assina o caso normalizado + as 6 partes da análise (o selo não contém nenhum texto).
+    res.json({ ...analise, selo: seloAnalise.assinar(res.locals.caso, copiarAnalise(analise)) });
   } catch (falha) {
     console.error('Erro na análise:', resumoDaFalha(falha));
     res.status(500).json({ erro: mensagemDeFalha(falha, 'analisar o caso') });
@@ -248,4 +262,4 @@ const servidor = app.listen(PORTA, () => {
 });
 
 // Exportado só para os testes automáticos poderem desligar o servidor.
-module.exports = { app, servidor, protecao, diagnosticoIp, LIMITES, MSG_CONFIGURACAO_PUBLICA, MSG_SEM_ANALISE, MSG_ANALISE_RECUSADA, MSG_ANALISE_GRANDE };
+module.exports = { app, servidor, protecao, diagnosticoIp, seloAnalise, lerCaso, LIMITES, MSG_CONFIGURACAO_PUBLICA, MSG_SEM_ANALISE, MSG_ANALISE_RECUSADA, MSG_ANALISE_GRANDE, MSG_ANALISE_NAO_CONFIRMADA };

@@ -495,7 +495,9 @@ describe('7. Servidor (HTTP) nos dois modos', () => {
 
     const textoAnalise = await (await postar('/api/analisar', CASO)).text();
     const analise = JSON.parse(textoAnalise);
-    assert.deepEqual(analise, { simulado: false, ...ANALISE_OK });
+    const { selo, ...semSelo } = analise;
+    assert.match(selo, /^v1\.\d{13}\.[A-Za-z0-9_-]{43}$/, 'a análise vem com o selo do servidor');
+    assert.deepEqual(semSelo, { simulado: false, ...ANALISE_OK });
     assert.equal(pedidos.length, 1, 'a análise não pode gerar a resposta automaticamente');
 
     const textoResposta = await (await postar('/api/gerar-resposta', { caso: CASO, analise })).text();
@@ -548,7 +550,9 @@ describe('7. Servidor (HTTP) nos dois modos', () => {
 
     const textoAnalise = await (await postar('/api/analisar', CASO)).text();
     const analise = JSON.parse(textoAnalise);
-    assert.deepEqual(analise, { simulado: false, ...ANALISE_OK });
+    const { selo, ...semSelo } = analise;
+    assert.match(selo, /^v1\.\d{13}\.[A-Za-z0-9_-]{43}$/, 'a análise vem com o selo do servidor');
+    assert.deepEqual(semSelo, { simulado: false, ...ANALISE_OK });
     assert.equal(pedidos.length, 1, 'a análise não pode gerar a resposta automaticamente');
 
     const textoResposta = await (await postar('/api/gerar-resposta', { caso: CASO, analise })).text();

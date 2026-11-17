@@ -159,7 +159,17 @@ function postar(rota, corpo, { ip, xff, sinal } = {}) {
   return fetch(`${base}${rota}`, { method: 'POST', headers: cabecalhos, body: typeof corpo === 'string' ? corpo : JSON.stringify(corpo), signal: sinal });
 }
 const analisar = (opcoes, caso = CASO) => postar('/api/analisar', caso, opcoes);
-const gerar = (opcoes, analise = ANALISE_OK, caso = CASO) => postar('/api/gerar-resposta', { caso, analise }, opcoes);
+// Gera a resposta. Uma análise sem selo recebe o selo do próprio servidor de
+// teste (como se tivesse vindo de /api/analisar), para que estes testes
+// continuem conferindo limites e tamanhos. O selo em si é testado em
+// testes/selo-analise.test.js.
+function comSelo(analise, caso) {
+  if (!analise || typeof analise !== 'object' || Array.isArray(analise) || analise.selo !== undefined) return analise;
+  const lido = modulo.lerCaso(caso);
+  if (!lido.caso || !protecaoModulo().analiseDentroDosLimites(analise)) return analise; // recusada antes do selo
+  return { ...analise, selo: modulo.seloAnalise.assinar(lido.caso, protecaoModulo().copiarAnalise(analise)) };
+}
+const gerar = (opcoes, analise = ANALISE_OK, caso = CASO) => postar('/api/gerar-resposta', { caso, analise: comSelo(analise, caso) }, opcoes);
 const status = async () => (await fetch(`${base}/api/status`)).json();
 
 const grande = (n, letra = 'x') => letra.repeat(n);

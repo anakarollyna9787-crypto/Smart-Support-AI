@@ -62,18 +62,20 @@ Opcional (se houver tempo): clique de novo em "Gerar resposta". A tela pede conf
 Fala sugerida:
 - "O servidor é Node.js com Express; a tela é HTML, CSS e JavaScript puros."
 - "Os prompts da IA foram versionados e validados com casos fictícios antes de virar código."
-- "O modo é escolhido no servidor: simulado, que é o padrão, ou Gemini. A integração com o Gemini está implementada, com chave só no servidor, sem armazenamento da conversa no Google, sem novas tentativas automáticas e com limite de tempo."
-- "Nos testes reais, a API do Gemini respondeu com indisponibilidade por alta demanda e com tempo esgotado. O sistema mostrou mensagens claras e não trocou para o modo simulado escondido. Por isso, a demonstração usa o modo simulado."
-- "São 185 testes automáticos, sem internet e sem custo, e uma verificação da tela no navegador."
+- "O modo é escolhido no servidor: simulado, que é o padrão, Gemini ou Groq. As integrações com o Gemini e com a Groq estão implementadas, com chave só no servidor, sem novas tentativas automáticas, com limite de tempo e teto de tokens."
+- "Nos testes reais, a API do Gemini respondeu com indisponibilidade por alta demanda e com tempo esgotado. O sistema mostrou mensagens claras e não trocou para o modo simulado escondido. A Groq ainda não foi ativada: antes disso, a proteção da demonstração pública precisa ser validada no Render. Por isso, a demonstração usa o modo simulado."
+- "A demonstração pública tem limites de uso por visitante e por dia, e o servidor assina a análise que gerou, para que ela não possa ser adulterada antes de gerar a resposta."
+- "São 565 testes automáticos, sem internet e sem custo."
 
 ---
 
 Perguntas prováveis (respostas curtas)
 
-- "A IA lê de verdade a mensagem?" No modo simulado, não: ele demonstra o formato. A leitura real virá com o Gemini ativado.
-- "Onde fica a chave da API?" Só no servidor, no arquivo .env, que não é enviado ao navegador nem ao repositório.
+- "A IA lê de verdade a mensagem?" No modo simulado, não: ele demonstra o formato. A leitura real virá com a IA real ativada (Groq ou Gemini).
+- "Onde fica a chave da API?" Só no servidor: no arquivo .env (uso local) ou nas variáveis de ambiente do Render. Ela nunca é enviada ao navegador nem ao repositório.
 - "E se a API cair?" O atendente vê uma mensagem clara, e nada é inventado no lugar.
 - "Os dados ficam salvos?" Não. Tudo fica na memória da página e some ao recarregar.
+- "Dá para adulterar a análise antes de gerar a resposta?" Não. O servidor assina a análise que ele mesmo gerou (selo HMAC) e só aceita, na geração da resposta, a análise com assinatura válida para aquele caso. Nada é guardado no servidor.
 
 ---
 
@@ -82,6 +84,7 @@ Se algo der errado durante a apresentação
 - A página não abre: confira se o terminal mostra "Smart Support AI iniciado." e se o endereço é http://localhost:3000.
 - O selo não mostra "Modo simulado": pare o servidor (Ctrl + C), confira MODO_IA=simulado no .env sem exibi-lo na tela, e rode npm start de novo.
 - A cópia foi bloqueada pelo navegador: o texto já fica selecionado; pressione Ctrl + C.
+- Ao gerar a resposta aparece "Não foi possível confirmar a análise...": o servidor reiniciou depois da análise (ou passaram mais de 30 minutos). Clique em "Analisar caso" de novo e depois em "Gerar resposta".
 
 ---
 
