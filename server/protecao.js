@@ -26,11 +26,15 @@
 //   LIMITE_GLOBAL_DIA=200     chamadas de todos os visitantes por dia
 //   LIMITE_SIMULTANEAS=2      chamadas à IA ao mesmo tempo
 //   PROXIES_CONFIAVEIS=1      quantos proxies existem à frente do servidor
+//                             (só usado com FONTE_IP=req-ip)
+//   FONTE_IP=req-ip           de onde vem o IP do visitante: req-ip ou
+//                             cloudflare (ver server/ip-visitante.js)
 // ============================================================
 
 // A biblioteca express-rate-limit só é carregada quando a proteção é criada
 // (o ia-groq.js usa este arquivo apenas para os limites da análise).
 const limitador = () => require('express-rate-limit');
+const { criarChaveDoVisitante, lerFonteIp, FONTE_PADRAO } = require('./ip-visitante');
 
 // ---------- Limites de tamanho da análise ----------
 // Iguais em todos os modos (simulado, gemini e groq). Com max_completion_tokens
@@ -194,12 +198,29 @@ function criarControleDeUso({ limiteGlobalDia, maxSimultaneas, agora = () => Dat
 }
 
 // ---------- Identificação do visitante ----------
-// Usa req.ip, que o Express calcula com base em "trust proxy"
-// (configurado no server.js com um NÚMERO de proxies, nunca "true").
-// IPv6 é agrupado por sub-rede /56, para que um único visitante não
-// escape do limite trocando de endereço dentro da própria rede.
+// A fonte do IP é escolhida por FONTE_IP (ver server/ip-visitante.js):
+// - req-ip (padrão): req.ip, que o Express calcula com base em "trust proxy"
+//   (configurado no server.js com um NÚMERO de proxies, nunca "true").
+//   ATENÇÃO: no Render, req.ip é um endereço INTERNO (não o do visitante).
+// - cloudflare: CF-Connecting-IP validado; sem IP confiável, todos os
+//   pedidos dividem a chave compartilhada "sem-ip-confiavel".
+// Nos dois casos, IPv6 é agrupado por sub-rede /56 (ipKeyGenerator), para que
+// um único visitante não escape do limite trocando de endereço na própria rede.
+
+// Chave no modo req-ip (mantida para compatibilidade).
 function chaveDoVisitante(req) {
   return limitador().ipKeyGenerator(typeof req.ip === 'string' ? req.ip : '');
+}
+
+// Avisa no terminal a PRIMEIRA vez que cada motivo de recusa aparece
+// (sem IPs; só o motivo), para não encher o registro do Render.
+function criarAvisoSemIpConfiavel() {
+  const vistos = new Set();
+  return (motivo) => {
+    if (vistos.has(motivo)) return;
+    vistos.add(motivo);
+    console.warn(`[protecao] pedido sem IP confiável (motivo: ${motivo}); usando a cota compartilhada "sem-ip-confiavel". Este motivo não será repetido.`);
+  };
 }
 
 // O limitador avisa no terminal quando detecta configuração suspeita.
@@ -217,12 +238,12 @@ function recusar(res, status, segundos, mensagem) {
 }
 
 // Cria um limitador por visitante (express-rate-limit, memória local).
-function criarLimitador({ janelaMs, limite, mensagem, loja }) {
+function criarLimitador({ janelaMs, limite, mensagem, loja, chave }) {
   return limitador().rateLimit({
     windowMs: janelaMs,
     limit: limite,
     store: loja,
-    keyGenerator: chaveDoVisitante,
+    keyGenerator: chave,
     standardHeaders: false,
     legacyHeaders: false,
     logger: registroSemIp,
@@ -234,17 +255,20 @@ function criarLimitador({ janelaMs, limite, mensagem, loja }) {
 }
 
 // Cria toda a proteção da demonstração.
-// Devolve { middlewares, situacaoPublica, configuracao, controle }.
+// Devolve { middlewares, situacaoPublica, configuracao, controle, fonteIp }.
+// opcoes.fonteIp: 'req-ip' (padrão) ou 'cloudflare' (ver lerFonteIp).
 function criarProtecao(configuracao = lerConfiguracao(), opcoes = {}) {
   const mensagens = criarMensagens(configuracao);
   const agora = opcoes.agora || (() => Date.now());
   const controle = criarControleDeUso({ ...configuracao, agora });
+  const fonteIp = opcoes.fonteIp === 'cloudflare' ? 'cloudflare' : FONTE_PADRAO;
+  const chave = criarChaveDoVisitante({ fonteIp, ipKeyGenerator: limitador().ipKeyGenerator, aoRecusar: criarAvisoSemIpConfiavel() });
 
   const { MemoryStore } = limitador();
   const lojaJanela = new MemoryStore();
   const lojaDia = new MemoryStore();
-  const limiteJanela = criarLimitador({ janelaMs: configuracao.janelaIpMs, limite: configuracao.limiteIpJanela, mensagem: mensagens.limiteJanela, loja: lojaJanela });
-  const limiteDia = criarLimitador({ janelaMs: UM_DIA_MS, limite: configuracao.limiteIpDia, mensagem: mensagens.limiteDia, loja: lojaDia });
+  const limiteJanela = criarLimitador({ janelaMs: configuracao.janelaIpMs, limite: configuracao.limiteIpJanela, mensagem: mensagens.limiteJanela, loja: lojaJanela, chave });
+  const limiteDia = criarLimitador({ janelaMs: UM_DIA_MS, limite: configuracao.limiteIpDia, mensagem: mensagens.limiteDia, loja: lojaDia, chave });
 
   // Barreiras globais: cota do dia e vagas simultâneas.
   async function controlarUso(req, res, next) {
@@ -255,8 +279,8 @@ function criarProtecao(configuracao = lerConfiguracao(), opcoes = {}) {
       }
       // Servidor ocupado: a chamada não aconteceu, então ela é devolvida
       // à cota do visitante (para não punir quem só pegou um momento cheio).
-      const chave = chaveDoVisitante(req);
-      await Promise.all([lojaJanela.decrement(chave), lojaDia.decrement(chave)]);
+      const chaveVisitante = chave(req);
+      await Promise.all([lojaJanela.decrement(chaveVisitante), lojaDia.decrement(chaveVisitante)]);
       return recusar(res, 503, 5, mensagens.ocupado);
     }
     // A rota libera a vaga quando a chamada à IA TERMINA (res.locals.liberarVaga,
@@ -285,6 +309,7 @@ function criarProtecao(configuracao = lerConfiguracao(), opcoes = {}) {
     configuracao,
     controle,
     mensagens,
+    fonteIp,
   };
 }
 
@@ -295,6 +320,7 @@ module.exports = {
   criarProtecao,
   criarControleDeUso,
   lerConfiguracao,
+  lerFonteIp,
   diaEmBrasilia,
   segundosAteMeiaNoite,
   chaveDoVisitante,

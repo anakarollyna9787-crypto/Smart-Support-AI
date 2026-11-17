@@ -21,7 +21,7 @@ const { CASOS_FICTICIOS } = require('./casos-ficticios');
 const RAIZ = path.join(__dirname, '..');
 const CAMINHOS = ['../server/server', '../server/ia', '../server/ia-gemini', '../server/ia-groq', '../server/ia-real', '../server/protecao', '../server/diagnostico-ip'].map((c) => require.resolve(c));
 const VARIAVEIS = ['MODO_IA', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'PORTA', 'PORT', 'DIAGNOSTICO_IP_TOKEN',
-  'LIMITE_IP_JANELA', 'JANELA_IP_MS', 'LIMITE_IP_DIA', 'LIMITE_GLOBAL_DIA', 'LIMITE_SIMULTANEAS', 'PROXIES_CONFIAVEIS'];
+  'LIMITE_IP_JANELA', 'JANELA_IP_MS', 'LIMITE_IP_DIA', 'LIMITE_GLOBAL_DIA', 'LIMITE_SIMULTANEAS', 'PROXIES_CONFIAVEIS', 'FONTE_IP'];
 
 const TOKEN = 'K7QM-3XPD-9TRW-H2NB-V8FC-L4ZJ-6YSG-E5AU';   // fictício, só para os testes
 const OUTRO_TOKEN = 'A1B2-C3D4-E5F6-G7H8-J9K1-L2M3-N4P5-Q6R7';

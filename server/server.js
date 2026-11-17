@@ -14,7 +14,7 @@ const { analisarCaso, gerarResposta, situacaoConfiguracao, MODO_IA, MODELO_GEMIN
 //    Proteção da demonstração pública: limites por visitante, limite global
 //    diário, máximo de chamadas simultâneas e conferência de formato e
 //    tamanho da análise, iguais em todos os modos (ver server/protecao.js).
-const { criarProtecao, lerConfiguracao, analiseDentroDosLimites, copiarAnalise } = require('./protecao');
+const { criarProtecao, lerConfiguracao, lerFonteIp, analiseDentroDosLimites, copiarAnalise } = require('./protecao');
 
 //    Diagnóstico TEMPORÁRIO da cadeia de proxies (desligado por padrão;
 //    só liga com DIAGNOSTICO_IP_TOKEN). Ver server/diagnostico-ip.js.
@@ -29,15 +29,20 @@ const PORTA = process.env.PORT || process.env.PORTA || 3000;
 
 // 3. Cria a aplicação (o "servidor") e a proteção da demonstração.
 const app = express();
-const protecao = criarProtecao(lerConfiguracao(process.env));
+//    FONTE_IP diz de onde vem o IP do visitante para os limites por IP:
+//    req-ip (padrão, uso local) ou cloudflare (Render). Ver server/ip-visitante.js.
+const FONTE_IP = lerFonteIp(process.env);
+const protecao = criarProtecao(lerConfiguracao(process.env), { fonteIp: FONTE_IP.fonteIp });
 
 //    Não anuncia a tecnologia do servidor nos cabeçalhos.
 app.disable('x-powered-by');
 
-//    Quantos proxies existem à frente do servidor (no Render: 1, o padrão).
-//    É sempre um NÚMERO, nunca "true": assim o Express usa o IP informado
-//    pelo proxy do Render e ignora valores de X-Forwarded-For inventados
-//    pelo visitante. Como conferir no Render: Documentação/Guia_Demonstracao.md.
+//    Quantos proxies existem à frente do servidor (PROXIES_CONFIAVEIS, padrão 1).
+//    É sempre um NÚMERO, nunca "true": assim o Express nunca usa valores de
+//    X-Forwarded-For inventados pelo visitante para calcular req.ip.
+//    Só importa para os limites com FONTE_IP=req-ip. No Render, o diagnóstico
+//    mostrou que req.ip é um endereço INTERNO (não o do visitante); por isso,
+//    no Render use FONTE_IP=cloudflare. Ver Documentação/Guia_Demonstracao.md.
 app.set('trust proxy', protecao.configuracao.proxiesConfiaveis);
 
 //    Permite receber dados em formato JSON vindos da tela (limite de 32 KB).
@@ -230,6 +235,8 @@ const servidor = app.listen(PORTA, () => {
   console.log('Smart Support AI iniciado.');
   console.log(`Modo da IA: ${MODO_IA}${MODELO_ATUAL ? ` (modelo ${MODELO_ATUAL})` : ''}`);
   console.log(`Limites da demonstração: ${limites.limiteIpJanela} por visitante a cada ${Math.round(limites.janelaIpMs / 60000)} min, ${limites.limiteIpDia} por visitante por dia, ${limites.limiteGlobalDia} no total por dia, ${limites.maxSimultaneas} ao mesmo tempo.`);
+  console.log(`Fonte do IP do visitante: ${protecao.fonteIp}`);
+  if (FONTE_IP.valorInvalido) console.warn('Aviso de configuração: FONTE_IP com valor desconhecido; usando req-ip. Valores aceitos: req-ip ou cloudflare.');
   if (!configuracao.ok) {
     console.warn(`Aviso de configuração: ${configuracao.mensagem}`);
     console.warn('Confira MODO_IA e a chave do provedor (GEMINI_API_KEY ou GROQ_API_KEY) no .env local ou nas variáveis de ambiente do Render.');

@@ -27,7 +27,7 @@ const { CASOS_FICTICIOS } = require('./casos-ficticios');
 const RAIZ = path.join(__dirname, '..');
 const CAMINHOS = ['../server/server', '../server/ia', '../server/ia-gemini', '../server/ia-groq', '../server/ia-real', '../server/protecao'].map((c) => require.resolve(c));
 const VARIAVEIS = ['MODO_IA', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'GROQ_BASE_URL', 'ANTHROPIC_API_KEY', 'MODELO_GEMINI', 'TEMPO_LIMITE_IA_MS', 'PORTA', 'PORT',
-  'LIMITE_IP_JANELA', 'JANELA_IP_MS', 'LIMITE_IP_DIA', 'LIMITE_GLOBAL_DIA', 'LIMITE_SIMULTANEAS', 'PROXIES_CONFIAVEIS'];
+  'LIMITE_IP_JANELA', 'JANELA_IP_MS', 'LIMITE_IP_DIA', 'LIMITE_GLOBAL_DIA', 'LIMITE_SIMULTANEAS', 'PROXIES_CONFIAVEIS', 'FONTE_IP'];
 
 const CHAVE_GROQ = 'gsk_FALSAchaveSOparaTESTE0000000000000000000000';
 const CHAVE_GEMINI = 'AIzaSyFALSA-CHAVE-SO-PARA-TESTE-00000000';

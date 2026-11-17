@@ -97,25 +97,41 @@ Pré-requisitos
 
 Variáveis de ambiente no Render (Environment)
 
-- MODO_IA = groq
+- MODO_IA = groq (só depois da validação do IP abaixo; até lá, simulado)
 - GROQ_API_KEY = a chave da Groq. Cadastre só no painel do Render. Nunca coloque a chave em arquivos do repositório, em render.yaml, em prints ou em mensagens.
 - Os limites já têm os valores aprovados como padrão e não precisam ser cadastrados. Só cadastre se quiser trocar algum: LIMITE_IP_JANELA (6), JANELA_IP_MS (600000 = 10 min), LIMITE_IP_DIA (20), LIMITE_GLOBAL_DIA (200), LIMITE_SIMULTANEAS (2).
-- PROXIES_CONFIAVEIS: não cadastre (o padrão é 1). Só mude se a validação abaixo indicar. Valores aceitos: números de 0 a 10. Qualquer outro valor (inclusive "true") é ignorado e vale 1.
+- FONTE_IP = cloudflare. Diz ao servidor para identificar o visitante pelo cabeçalho CF-Connecting-IP (veja abaixo por quê). Valores aceitos: req-ip (padrão, para uso local) ou cloudflare. Qualquer outro valor é ignorado, vale req-ip e gera um aviso no registro (Logs).
+- PROXIES_CONFIAVEIS: não cadastre (o padrão é 1). Com FONTE_IP=cloudflare ele não influencia os limites. Valores aceitos: números de 0 a 10. Qualquer outro valor (inclusive "true") é ignorado e vale 1.
+
+Por que FONTE_IP=cloudflare no Render
+
+O diagnóstico de IP feito no Render mostrou que:
+
+- req.ip (o IP calculado pelo Express com PROXIES_CONFIAVEIS) e o endereço da conexão são endereços INTERNOS do Render, e não o do visitante. Com eles, os limites por visitante não funcionam: visitantes diferentes podem dividir a mesma cota, ou o mesmo visitante pode cair em cotas diferentes. Trocar PROXIES_CONFIAVEIS não resolve.
+- CF-Connecting-IP traz o IP público do visitante, e cabeçalhos falsos (X-Forwarded-For, X-Real-IP) não o alteram.
+- Tentativas de enviar um CF-Connecting-IP falso foram recusadas pela própria Cloudflare (HTTP 403).
+
+Com FONTE_IP=cloudflare, o servidor só aceita o CF-Connecting-IP quando: a conexão vem da rede interna do Render; existe um único cabeçalho cf-ray no formato da Cloudflare; e existe um único CF-Connecting-IP com um IP público válido. Se qualquer condição falhar, o pedido entra numa cota única compartilhada ("sem-ip-confiavel"), dividida por todos os pedidos nessa situação. O servidor NUNCA usa req.ip, True-Client-IP, X-Real-IP ou X-Forwarded-For como alternativa.
+
+Atenção: essa segurança depende de todo acesso passar pela Cloudflare do Render (endereço .onrender.com). Se um dia houver domínio próprio, outro proxy ou CDN à frente do site, repita a validação abaixo antes de manter a Groq ativa.
 
 Como validar o IP real no Render (sem custo, ANTES de ativar a Groq)
 
-Os limites valem também no modo simulado. Por isso, dá para validar tudo com MODO_IA=simulado, sem gastar nenhuma chamada da Groq. O servidor não registra IPs; a validação é feita pelo comportamento dos limites.
+Os limites valem também no modo simulado. Por isso, dá para validar tudo com MODO_IA=simulado, sem gastar nenhuma chamada da Groq. O servidor não registra IPs; a validação é feita pelo comportamento dos limites e pelos avisos (sem IPs) no registro.
 
-1. Publique com MODO_IA=simulado e sem PROXIES_CONFIAVEIS.
-2. No computador (rede Wi-Fi), faça 6 análises seguidas no site. A 7ª deve mostrar: "Você atingiu o limite da demonstração: até 6 chamadas a cada 10 minutos."
-3. Ao mesmo tempo, no celular usando dados móveis (Wi-Fi desligado), faça uma análise. Ela deve funcionar.
-   - Se o celular também estiver bloqueado, o servidor está enxergando o IP de um proxy do Render (todos os visitantes dividiriam a mesma cota). Cadastre PROXIES_CONFIAVEIS=2, aguarde o reinício do serviço e repita do passo 2.
-4. Com o computador ainda bloqueado, tente "inventar" outro IP. No Git Bash, troque SEU-SITE pelo endereço do site:
+1. Publique o código com FONTE_IP (exige commit e push autorizados) mantendo MODO_IA=simulado. Cadastre FONTE_IP=cloudflare no Render e não cadastre PROXIES_CONFIAVEIS.
+2. No registro (Logs) do Render, confira a inicialização: deve aparecer "Modo da IA: simulado" e "Fonte do IP do visitante: cloudflare". Não pode aparecer "FONTE_IP com valor desconhecido".
+3. No computador (rede Wi-Fi), faça 6 análises seguidas no site. A 7ª deve mostrar: "Você atingiu o limite da demonstração: até 6 chamadas a cada 10 minutos."
+4. Ao mesmo tempo, no celular usando dados móveis (Wi-Fi desligado), faça uma análise. Ela deve funcionar.
+5. Confira o registro de novo. Durante o uso normal pelo navegador, NÃO deve aparecer "pedido sem IP confiável". Se aparecer, anote o motivo (por exemplo cf-ray-invalido ou conexao-nao-interna): nesse caso, todos os visitantes estariam dividindo a mesma cota. Não ative a Groq e leve o motivo para análise.
+6. Com o computador ainda bloqueado, tente "inventar" outro IP. No Git Bash, troque SEU-SITE pelo endereço do site:
 
-   curl -s -X POST https://SEU-SITE.onrender.com/api/analisar -H "Content-Type: application/json" -H "X-Forwarded-For: 198.51.100.7" --data '{"mensagem":"teste ficticio"}'
+   curl -s -X POST https://SEU-SITE.onrender.com/api/analisar -H "Content-Type: application/json" -H "X-Forwarded-For: 198.51.100.7" -H "X-Real-IP: 198.51.100.8" --data '{"mensagem":"teste ficticio"}'
 
-   A resposta deve continuar sendo o aviso de limite. Se vier uma análise, o servidor está confiando em proxies demais (o visitante conseguiria escapar do limite): diminua PROXIES_CONFIAVEIS (de 2 para 1) e repita.
-5. Os contadores ficam na memória e zeram quando o serviço reinicia. Depois da validação, reinicie o serviço no Render (ou aguarde 10 minutos) para começar do zero.
+   A resposta deve continuar sendo o aviso de limite. Se vier uma análise, o visitante conseguiria escapar do limite: não ative a Groq.
+7. Repita o passo 6 com -H "CF-Connecting-IP: 198.51.100.9" -H "True-Client-IP: 198.51.100.9" no lugar dos dois cabeçalhos. O esperado é a Cloudflare recusar (HTTP 403, página HTML), como no diagnóstico. Se vier uma análise, não ative a Groq.
+8. Os contadores ficam na memória e zeram quando o serviço reinicia. Depois da validação, reinicie o serviço no Render (ou aguarde 10 minutos) para começar do zero.
+9. Só depois de tudo aprovado: remova DIAGNOSTICO_IP_TOKEN do Render (o diagnóstico já expira sozinho, mas a variável não deve ficar cadastrada).
 
 Ativando a Groq
 
